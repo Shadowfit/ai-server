@@ -1,0 +1,6 @@
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# 대용량 모델 파일이 로컬에 있다면 빌드 시 제외
+models/*.bin
