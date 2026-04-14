@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     # 영상 전처리 설정
     VIDEO_MAX_FPS: int = 30
     VIDEO_PROCESS_FPS: int = 10  # 분석 시 초당 프레임 수
+    SQUAT_ROI_MIN_X: float = 0.38
+    SQUAT_ROI_MIN_Y: float = 0.40
+    SQUAT_ROI_MAX_X: float = 0.78
+    SQUAT_ROI_MAX_Y: float = 0.76
 
     # Spring Boot 백엔드 URL (전처리 결과 저장용)
     BACKEND_URL: str = "http://localhost:8080/api/v1"
