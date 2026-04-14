@@ -2,18 +2,32 @@ import grpc
 from concurrent import futures
 import exercise_pb2
 import exercise_pb2_grpc
+from google.protobuf.timestamp_pb2 import Timestamp
 
 class ExerciseServicer(exercise_pb2_grpc.ExerciseServiceServicer):
     def StartAnalysis(self, request, context):
-        # 여기가 핵심! 스프링이 보낸 데이터를 출력해봅니다.
-        print(f"==== [gRPC 요청 수신] ====")
-        print(f"운동 ID: {request.exercise_id}")
-        print(f"유튜브 ID: {request.youtube_id}")
+        print(f"==== [분석 시작 요청 수신] ====")
         print(f"세션 ID: {request.session_id}")
-        print(f"==========================")
 
-        # 일단 성공했다고 응답만 보냄
-        return exercise_pb2.AnalyzeResponse(success=True)
+        # 현재 시간을 gRPC Timestamp 형식으로 변환
+        now = Timestamp()
+        now.GetCurrentTime()
+
+        return exercise_pb2.AnalyzeResponse(
+            success=True,
+            session_id=request.session_id,
+            exercise_id=request.exercise_id,
+            start_time=now,
+            status=exercise_pb2.SessionStatus.IN_PROGRESS # Enum 사용
+        )
+    # 2. [추가] 세션 종료 요청 (테스트용으로 미리 만들어두기)
+    def CompleteAnalysis(self, request, context):
+        print(f"==== [세션 종료 및 결과 전송] ====")
+        print(f"세션 {request.session_id} 분석 완료! 총 {request.total_reps}회 수행.")
+        return exercise_pb2.SessionCompleteResponse(
+            session_id=request.session_id,
+            status=exercise_pb2.SessionStatus.COMPLETED
+        )
 
 def serve():
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))

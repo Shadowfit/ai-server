@@ -1,75 +1,102 @@
 syntax = "proto3";
 
-// 자바 빌드 시 개별 클래스 파일로 생성하도록 설정
+// 시간 처리를 위한 구글 라이브러리 임포트
+import "google/protobuf/timestamp.proto";
+
 option java_multiple_files = true;
-// 프로젝트 패키지 경로에 맞게 수정 가능
 option java_package = "com.shadowfit.grpc";
-// 외부 클래스 이름 설정
 option java_outer_classname = "ExerciseProto";
 
-// [Service] 운동 분석 및 데이터 전송 서비스 정의
+// [Service] 운동 분석 및 세션 관리 서비스
 service ExerciseService {
 
-  // 1. 분석 시작 요청 (Spring -> FastAPI)
-  // 사용자가 운동 시작 버튼을 누르면 스프링이 FastAPI에 분석을 지시합니다.
+  // 1. 운동 세션 시작 요청 (Spring -> FastAPI)
+  // 기존 StartAnalysis를 ExercisesRequestDto 규격에 맞춰 고도화
   rpc StartAnalysis (AnalyzeRequest) returns (AnalyzeResponse);
 
-  // 2. 최종 결과 조회 (Spring -> FastAPI)
-  // 분석 완료 후 저장된 최종 포즈 데이터 리스트를 가져옵니다.
-  rpc GetFinalPoseData (SessionRequest) returns (PoseDataList);
+  // 2. 운동 세션 종료 및 분석 결과 전송 (FastAPI -> Spring)
+  // PUT /complete 요청에 대응하며, FastAPI가 분석을 마치고 스프링에 결과를 보고함
+  rpc CompleteAnalysis (SessionCompleteRequest) returns (SessionCompleteResponse);
 
   // 3. 분석 결과 배치 저장 (FastAPI -> Spring)
-  // FastAPI가 분석 중인 포즈 데이터 뭉치(Batch)를 스프링에 전송하여 DB에 저장합니다.
   rpc SavePoseDataBatch (PoseDataBatchRequest) returns (PoseDataResponse);
+
+  // 4. 최종 결과 조회 (Spring -> FastAPI)
+  rpc GetFinalPoseData (SessionRequest) returns (PoseDataList);
 }
 
 // ------------------------------------------------------------
-// 1. 분석 시작 관련 메시지
+// [공통] 세션 상태 정의
+// ------------------------------------------------------------
+enum SessionStatus {
+  IN_PROGRESS = 0;
+  COMPLETED = 1;
+  FAILED = 2;
+}
+
+// ------------------------------------------------------------
+// 1. 세션 시작 관련 메시지 (ExercisesRequestDto/ResponseDto 대응)
 // ------------------------------------------------------------
 
 message AnalyzeRequest {
-  int64 exercise_id = 1;     // 운동 종류 ID
-  string youtube_id = 2;     // 분석할 유튜브 영상 ID
-  int64 session_id = 3;      // 생성된 운동 세션 ID
+  int64 exercise_id = 1;      // 운동 ID
+  string reference_source = 2; // 유튜브 링크 등
+  int64 session_id = 3;       // 생성된 세션 ID
 }
 
 message AnalyzeResponse {
-  bool success = 1;          // 요청 수락 여부
+  bool success = 1;
+  int64 session_id = 2;
+  int64 exercise_id = 3;
+  google.protobuf.Timestamp start_time = 4; // 시작 시간 (LocalDateTime 대용)
+  SessionStatus status = 5;                 // 세션 상태
 }
 
 // ------------------------------------------------------------
-// 2. 세션 조회 관련 메시지
+// 2. 세션 종료 관련 메시지 (PUT /complete 대응)
+// ------------------------------------------------------------
+
+message SessionCompleteRequest {
+  int64 session_id = 1;
+  int32 total_reps = 2;       // 총 횟수
+  double avg_sync_rate = 3;   // 평균 일치율
+  double max_sync_rate = 4;   // 최대 일치율
+  double min_sync_rate = 5;   // 최소 일치율
+  double calories_burned = 6; // 소모 칼로리
+  int32 difficulty_level = 7; // 난이도
+}
+
+message SessionCompleteResponse {
+  int64 session_id = 1;
+  SessionStatus status = 2;
+  google.protobuf.Timestamp end_time = 3;   // 종료 시간
+}
+
+// ------------------------------------------------------------
+// 3. 기존 데이터 저장 관련 메시지 (유지)
 // ------------------------------------------------------------
 
 message SessionRequest {
-  int64 session_id = 1;      // 조회할 세션 ID
+  int64 session_id = 1;
 }
 
 message PoseDataList {
-  // 여러 개의 포즈 응답 데이터를 담는 리스트
   repeated PoseDataResponse pose_data = 1;
 }
 
-// ------------------------------------------------------------
-// 3. 데이터 저장(Batch) 관련 메시지
-// ------------------------------------------------------------
-
-// 개별 포즈 데이터의 상세 정보
 message PoseDataRequest {
-  double timestamp_sec = 1;     // 영상 내 시간대 (초)
-  string joint_coordinates = 2; // 관절 좌표 (JSON 문자열 형태)
+  double timestamp_sec = 1;
+  string joint_coordinates = 2;
 }
 
-// 여러 포즈 데이터를 한 번에 묶어서 보내는 요청
 message PoseDataBatchRequest {
-  int64 session_id = 1;         // 해당 데이터를 저장할 세션 ID
-  repeated PoseDataRequest pose_data = 2; // 포즈 데이터 리스트 (Batch)
+  int64 session_id = 1;
+  repeated PoseDataRequest pose_data = 2;
 }
 
-// 전송 결과에 대한 응답
 message PoseDataResponse {
-  bool success = 1;             // 저장 성공 여부
-  int64 session_id = 2;         // 확인용 세션 ID
-  double timestamp_sec = 3;      // (선택) 마지막으로 처리된 타임스탬프
-  string joint_coordinates = 4;  // (선택) 마지막으로 처리된 좌표 데이터
+  bool success = 1;
+  int64 session_id = 2;
+  double timestamp_sec = 3;
+  string joint_coordinates = 4;
 }

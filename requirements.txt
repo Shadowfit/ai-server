@@ -11,5 +11,6 @@ dtaidistance==2.3.12
 
 python-multipart==0.0.20
 
-grpcio==1.62.1
-grpcio-tools==1.62.1
+grpcio>=1.62.1
+grpcio-tools>=1.62.1
+protobuf==4.25.3

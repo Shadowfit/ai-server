@@ -26,7 +26,7 @@ if _version_not_supported:
 
 
 class ExerciseServiceStub(object):
-    """[Service] 운동 분석 및 데이터 전송 서비스 정의
+    """[Service] 운동 분석 및 세션 관리 서비스
     """
 
     def __init__(self, channel):
@@ -40,33 +40,38 @@ class ExerciseServiceStub(object):
                 request_serializer=exercise__pb2.AnalyzeRequest.SerializeToString,
                 response_deserializer=exercise__pb2.AnalyzeResponse.FromString,
                 _registered_method=True)
-        self.GetFinalPoseData = channel.unary_unary(
-                '/ExerciseService/GetFinalPoseData',
-                request_serializer=exercise__pb2.SessionRequest.SerializeToString,
-                response_deserializer=exercise__pb2.PoseDataList.FromString,
+        self.CompleteAnalysis = channel.unary_unary(
+                '/ExerciseService/CompleteAnalysis',
+                request_serializer=exercise__pb2.SessionCompleteRequest.SerializeToString,
+                response_deserializer=exercise__pb2.SessionCompleteResponse.FromString,
                 _registered_method=True)
         self.SavePoseDataBatch = channel.unary_unary(
                 '/ExerciseService/SavePoseDataBatch',
                 request_serializer=exercise__pb2.PoseDataBatchRequest.SerializeToString,
                 response_deserializer=exercise__pb2.PoseDataResponse.FromString,
                 _registered_method=True)
+        self.GetFinalPoseData = channel.unary_unary(
+                '/ExerciseService/GetFinalPoseData',
+                request_serializer=exercise__pb2.SessionRequest.SerializeToString,
+                response_deserializer=exercise__pb2.PoseDataList.FromString,
+                _registered_method=True)
 
 
 class ExerciseServiceServicer(object):
-    """[Service] 운동 분석 및 데이터 전송 서비스 정의
+    """[Service] 운동 분석 및 세션 관리 서비스
     """
 
     def StartAnalysis(self, request, context):
-        """1. 분석 시작 요청 (Spring -> FastAPI)
-        사용자가 운동 시작 버튼을 누르면 스프링이 FastAPI에 분석을 지시합니다.
+        """1. 운동 세션 시작 요청 (Spring -> FastAPI)
+        기존 StartAnalysis를 ExercisesRequestDto 규격에 맞춰 고도화
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def GetFinalPoseData(self, request, context):
-        """2. 최종 결과 조회 (Spring -> FastAPI)
-        분석 완료 후 저장된 최종 포즈 데이터 리스트를 가져옵니다.
+    def CompleteAnalysis(self, request, context):
+        """2. 운동 세션 종료 및 분석 결과 전송 (FastAPI -> Spring)
+        PUT /complete 요청에 대응하며, FastAPI가 분석을 마치고 스프링에 결과를 보고함
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -74,7 +79,13 @@ class ExerciseServiceServicer(object):
 
     def SavePoseDataBatch(self, request, context):
         """3. 분석 결과 배치 저장 (FastAPI -> Spring)
-        FastAPI가 분석 중인 포즈 데이터 뭉치(Batch)를 스프링에 전송하여 DB에 저장합니다.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetFinalPoseData(self, request, context):
+        """4. 최종 결과 조회 (Spring -> FastAPI)
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -88,15 +99,20 @@ def add_ExerciseServiceServicer_to_server(servicer, server):
                     request_deserializer=exercise__pb2.AnalyzeRequest.FromString,
                     response_serializer=exercise__pb2.AnalyzeResponse.SerializeToString,
             ),
-            'GetFinalPoseData': grpc.unary_unary_rpc_method_handler(
-                    servicer.GetFinalPoseData,
-                    request_deserializer=exercise__pb2.SessionRequest.FromString,
-                    response_serializer=exercise__pb2.PoseDataList.SerializeToString,
+            'CompleteAnalysis': grpc.unary_unary_rpc_method_handler(
+                    servicer.CompleteAnalysis,
+                    request_deserializer=exercise__pb2.SessionCompleteRequest.FromString,
+                    response_serializer=exercise__pb2.SessionCompleteResponse.SerializeToString,
             ),
             'SavePoseDataBatch': grpc.unary_unary_rpc_method_handler(
                     servicer.SavePoseDataBatch,
                     request_deserializer=exercise__pb2.PoseDataBatchRequest.FromString,
                     response_serializer=exercise__pb2.PoseDataResponse.SerializeToString,
+            ),
+            'GetFinalPoseData': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetFinalPoseData,
+                    request_deserializer=exercise__pb2.SessionRequest.FromString,
+                    response_serializer=exercise__pb2.PoseDataList.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -107,7 +123,7 @@ def add_ExerciseServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class ExerciseService(object):
-    """[Service] 운동 분석 및 데이터 전송 서비스 정의
+    """[Service] 운동 분석 및 세션 관리 서비스
     """
 
     @staticmethod
@@ -138,7 +154,7 @@ class ExerciseService(object):
             _registered_method=True)
 
     @staticmethod
-    def GetFinalPoseData(request,
+    def CompleteAnalysis(request,
             target,
             options=(),
             channel_credentials=None,
@@ -151,9 +167,9 @@ class ExerciseService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/ExerciseService/GetFinalPoseData',
-            exercise__pb2.SessionRequest.SerializeToString,
-            exercise__pb2.PoseDataList.FromString,
+            '/ExerciseService/CompleteAnalysis',
+            exercise__pb2.SessionCompleteRequest.SerializeToString,
+            exercise__pb2.SessionCompleteResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -181,6 +197,33 @@ class ExerciseService(object):
             '/ExerciseService/SavePoseDataBatch',
             exercise__pb2.PoseDataBatchRequest.SerializeToString,
             exercise__pb2.PoseDataResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetFinalPoseData(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ExerciseService/GetFinalPoseData',
+            exercise__pb2.SessionRequest.SerializeToString,
+            exercise__pb2.PoseDataList.FromString,
             options,
             channel_credentials,
             insecure,
