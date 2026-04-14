@@ -101,6 +101,10 @@ def _phase_from_angles(current_angle: float, delta: float) -> str:
 
 def analyze_squat_frames(
     landmark_frames: list[list[Landmark] | None],
+    *,
+    bottom_threshold: float = 100.0,
+    standing_threshold: float = 150.0,
+    min_rep_frames: int = 4,
 ) -> tuple[list[SquatFrameMetrics | None], SquatAnalysisResult]:
     """Analyze a sequence of landmark frames and infer squat reps and feedback."""
     raw_metrics: list[_RawSquatFrame | None] = []
@@ -128,12 +132,15 @@ def analyze_squat_frames(
     frame_metrics: list[SquatFrameMetrics | None] = []
     previous_angle: float | None = None
     rep_count = 0
-    seen_bottom = False
+    rep_state = "waiting_for_standing"
+    last_rep_frame_index = -10_000
     deepest_knee = 180.0
     torso_samples: list[float] = []
     current_phase = "unknown"
 
-    for metric, smooth_knee in zip(raw_metrics, smoothed_knees, strict=False):
+    for frame_index, (metric, smooth_knee) in enumerate(
+        zip(raw_metrics, smoothed_knees, strict=False)
+    ):
         if metric is None or smooth_knee is None:
             frame_metrics.append(None)
             continue
@@ -141,11 +148,21 @@ def analyze_squat_frames(
         delta = 0.0 if previous_angle is None else smooth_knee - previous_angle
         phase = _phase_from_angles(smooth_knee, delta)
 
-        if smooth_knee <= 100:
-            seen_bottom = True
-        if seen_bottom and previous_angle is not None and previous_angle < 140 <= smooth_knee:
+        if rep_state == "waiting_for_standing":
+            if smooth_knee >= standing_threshold:
+                rep_state = "ready"
+            elif smooth_knee <= bottom_threshold:
+                rep_state = "bottom"
+        elif rep_state == "ready" and smooth_knee <= bottom_threshold:
+            rep_state = "bottom"
+        elif (
+            rep_state == "bottom"
+            and smooth_knee >= standing_threshold
+            and frame_index - last_rep_frame_index >= min_rep_frames
+        ):
             rep_count += 1
-            seen_bottom = False
+            rep_state = "ready"
+            last_rep_frame_index = frame_index
 
         previous_angle = smooth_knee
         deepest_knee = min(deepest_knee, smooth_knee)

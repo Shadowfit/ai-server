@@ -8,6 +8,7 @@ import cv2
 from app.config import settings
 from app.core.angle_calculator import extract_angles
 from app.core.mediapipe_detector import get_detector
+from app.core.pose_filter import NormalizedRoi, PoseTargetTracker
 from app.core.squat_analyzer import analyze_squat_frames
 from app.models.pose import Landmark
 from app.models.video import FrameResult, VideoAnalysisResult
@@ -24,8 +25,17 @@ def analyze_video(video_path: str, exercise_type: str) -> VideoAnalysisResult:
     duration = total_frames / original_fps if original_fps > 0 else 0
 
     frame_interval = max(1, int(original_fps / settings.VIDEO_PROCESS_FPS))
+    processed_fps = original_fps / frame_interval if original_fps > 0 else settings.VIDEO_PROCESS_FPS
 
     detector = get_detector()
+    pose_tracker = PoseTargetTracker(
+        roi=NormalizedRoi(
+            min_x=settings.SQUAT_ROI_MIN_X,
+            min_y=settings.SQUAT_ROI_MIN_Y,
+            max_x=settings.SQUAT_ROI_MAX_X,
+            max_y=settings.SQUAT_ROI_MAX_Y,
+        )
+    )
     frames: list[FrameResult] = []
     landmark_frames: list[list[Landmark] | None] = []
     frame_idx = 0
@@ -37,7 +47,7 @@ def analyze_video(video_path: str, exercise_type: str) -> VideoAnalysisResult:
 
         if frame_idx % frame_interval == 0:
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            landmarks = detector.detect(rgb)
+            landmarks = pose_tracker.filter(detector.detect(rgb))
             landmark_frames.append(landmarks)
 
             if landmarks:
@@ -57,7 +67,11 @@ def analyze_video(video_path: str, exercise_type: str) -> VideoAnalysisResult:
 
     squat_summary = None
     if exercise_type == "squat":
-        squat_frame_metrics, squat_summary = analyze_squat_frames(landmark_frames)
+        min_rep_frames = max(4, int(processed_fps * 1.2))
+        squat_frame_metrics, squat_summary = analyze_squat_frames(
+            landmark_frames,
+            min_rep_frames=min_rep_frames,
+        )
         valid_metric_index = 0
         for frame in frames:
             while (
