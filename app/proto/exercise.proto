@@ -10,19 +10,19 @@ option java_outer_classname = "ExerciseProto";
 // [Service] 운동 분석 및 세션 관리 서비스
 service ExerciseService {
 
-  // 1. 운동 세션 시작 요청 (Spring -> FastAPI)
-  // 기존 StartAnalysis를 ExercisesRequestDto 규격에 맞춰 고도화
-  rpc StartAnalysis (AnalyzeRequest) returns (AnalyzeResponse);
+  // [추가] 등록 단계: 유튜브 링크를 주면 전체 좌표를 반환 (Spring -> FastAPI)
+  rpc ExtractReferenceData (ExtractRequest) returns (ExtractResponse);
 
-  // 2. 운동 세션 종료 및 분석 결과 전송 (FastAPI -> Spring)
-  // PUT /complete 요청에 대응하며, FastAPI가 분석을 마치고 스프링에 결과를 보고함
-  rpc CompleteAnalysis (SessionCompleteRequest) returns (SessionCompleteResponse);
+  // [수정] 실행 단계: 세션 정보와 함께 'DB에 저장된 기준 좌표'를 전달 (Spring -> FastAPI)
+  rpc StartAnalysis (AnalyzeRequest) returns (AnalyzeResponse);
 
   // 3. 분석 결과 배치 저장 (FastAPI -> Spring)
   rpc SavePoseDataBatch (PoseDataBatchRequest) returns (PoseDataResponse);
 
   // 4. 최종 결과 조회 (Spring -> FastAPI)
   rpc GetFinalPoseData (SessionRequest) returns (PoseDataList);
+
+  rpc CompleteAnalysis (SessionCompleteRequest) returns (SessionCompleteResponse);
 }
 
 // ------------------------------------------------------------
@@ -38,10 +38,25 @@ enum SessionStatus {
 // 1. 세션 시작 관련 메시지 (ExercisesRequestDto/ResponseDto 대응)
 // ------------------------------------------------------------
 
+// 1. 등록용 메시지
+message ExtractRequest {
+  int64 exercise_id = 1;
+  string youtube_url = 2;
+  repeated PoseDataRequest extracted_poses = 3; // <--- 요청에 리스트가 있어야 함!
+}
+
+message ExtractResponse {
+  bool success = 1;
+  int64 exercise_id = 2;
+  repeated PoseDataRequest extracted_poses = 3; // 추출된 모든 프레임 좌표
+}
+
 message AnalyzeRequest {
-  int64 exercise_id = 1;      // 운동 ID
-  string reference_source = 2; // 유튜브 링크 등
-  int64 session_id = 3;       // 생성된 세션 ID
+  int64 exercise_id = 1;
+  int64 session_id = 3;
+  string reference_source = 2;
+  // [핵심] 스프링 DB에서 조회한 기준 좌표 리스트를 여기에 담아서 보냅니다.
+  repeated PoseDataRequest reference_poses = 4;
 }
 
 message AnalyzeResponse {
