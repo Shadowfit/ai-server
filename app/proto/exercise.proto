@@ -23,6 +23,8 @@ service ExerciseService {
   rpc GetFinalPoseData (SessionRequest) returns (PoseDataList);
 
   rpc CompleteAnalysis (SessionCompleteRequest) returns (SessionCompleteResponse);
+
+  rpc StopAnalysis (StopRequest) returns (StopResponse);
 }
 
 // ------------------------------------------------------------
@@ -114,4 +116,16 @@ message PoseDataResponse {
   int64 session_id = 2;
   double timestamp_sec = 3;
   string joint_coordinates = 4;
+}
+// ------------------------------------------------------------
+// ✅ 4. 분석 중단 관련 메시지 (새로 추가)
+// ------------------------------------------------------------
+message StopRequest {
+  int64 session_id = 1;
+}
+
+message StopResponse {
+  bool success = 1;
+  string message = 2;
+  int64 session_id = 3;
 }
