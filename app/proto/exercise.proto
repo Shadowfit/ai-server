@@ -24,6 +24,7 @@ service ExerciseService {
 
   rpc CompleteAnalysis (SessionCompleteRequest) returns (SessionCompleteResponse);
 
+  // ✅ 사용자가 운동을 중단했을 때 AI 서버에 알리는 명령
   rpc StopAnalysis (StopRequest) returns (StopResponse);
 }
 
@@ -104,6 +105,8 @@ message PoseDataList {
 message PoseDataRequest {
   double timestamp_sec = 1;
   string joint_coordinates = 2;
+  double sync_rate = 3;
+  string feedback_message = 4;
 }
 
 message PoseDataBatchRequest {
@@ -117,9 +120,7 @@ message PoseDataResponse {
   double timestamp_sec = 3;
   string joint_coordinates = 4;
 }
-// ------------------------------------------------------------
-// ✅ 4. 분석 중단 관련 메시지 (새로 추가)
-// ------------------------------------------------------------
+
 message StopRequest {
   int64 session_id = 1;
 }
