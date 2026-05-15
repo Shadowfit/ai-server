@@ -20,6 +20,14 @@ class PoseRequest(BaseModel):
     exercise_type: str = Field(
         default="squat", description="운동 유형 (squat, deadlift, pullup)"
     )
+    session_id: int | None = Field(
+        default=None,
+        description="운동 세션 ID. 있으면 누적 분석 + rep 감지 시 Spring 콜백",
+    )
+    timestamp_sec: float | None = Field(
+        default=None,
+        description="영상 내 시간(초). 누락 시 서버 측 인덱스로 대체",
+    )
 
 
 class PoseResponse(BaseModel):
@@ -29,3 +37,6 @@ class PoseResponse(BaseModel):
     landmarks: list[Landmark] | None = None
     angles: list[float] | None = None
     message: str | None = None
+    rep_count: int | None = None
+    rep_completed: bool = False
+    sync_rate: float | None = None

@@ -5,7 +5,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from app.core.angle_calculator import calculate_angle
+from app.core.angle_calculator import calculate_angle, extract_angles
+from app.core.dtw_calculator import compute_sync_rate
 from app.models.pose import Landmark
 from app.models.video import SquatAnalysisResult, SquatFrameMetrics
 from app.utils.constants import LANDMARK
@@ -214,3 +215,115 @@ def analyze_squat_frames(
         valid_frame_ratio=valid_ratio,
     )
     return frame_metrics, summary
+
+
+# ---------------------------------------------------------------------------
+# Streaming(실시간) 분석기
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class StreamingRepEvent:
+    """rep 1회가 완성될 때마다 발행되는 이벤트."""
+
+    rep_number: int
+    sync_rate: float
+    deepest_knee_angle: float
+    mean_torso_tilt: float
+    feedback_message: str
+
+
+class StreamingSquatAnalyzer:
+    """프레임 단위로 호출되는 stateful squat 분석기.
+
+    각 호출에서 (rep_state, smoothing window)를 SessionState 안에 보존하고,
+    rep 1회 완성 시 그 rep 구간의 user 각도들과 reference angle sequence를
+    DTW로 비교해 sync_rate를 산출한다.
+    """
+
+    BOTTOM_THRESHOLD = 100.0
+    STANDING_THRESHOLD = 150.0
+    MIN_REP_FRAMES = 4
+    VISIBILITY_FLOOR = 0.55
+
+    def __init__(self, exercise_type: str = "squat") -> None:
+        self.exercise_type = exercise_type
+
+    def process_frame(
+        self,
+        state,
+        landmarks: list[Landmark],
+    ) -> tuple[list[float] | None, StreamingRepEvent | None]:
+        """단일 프레임을 처리.
+
+        Returns:
+            (angles, rep_event) — angles는 visibility 통과 시 계산된 각도 시퀀스,
+            rep_event는 이 프레임으로 rep 1회가 완성된 경우에만 채워진다.
+        """
+        if not landmarks or _frame_visibility_score(landmarks) < self.VISIBILITY_FLOOR:
+            state.frame_index += 1
+            return None, None
+
+        raw = _extract_raw_metrics(landmarks)
+        angles = extract_angles(landmarks, self.exercise_type)
+
+        # 최근 3개 raw knee로 smoothing
+        state.recent_raw_knees.append(raw.knee_angle)
+        if len(state.recent_raw_knees) > 3:
+            state.recent_raw_knees.pop(0)
+        smooth_knee = round(sum(state.recent_raw_knees) / len(state.recent_raw_knees), 2)
+
+        rep_event: StreamingRepEvent | None = None
+
+        if state.rep_state == "waiting_for_standing":
+            if smooth_knee >= self.STANDING_THRESHOLD:
+                state.rep_state = "ready"
+            elif smooth_knee <= self.BOTTOM_THRESHOLD:
+                state.rep_state = "bottom"
+        elif state.rep_state == "ready" and smooth_knee <= self.BOTTOM_THRESHOLD:
+            state.rep_state = "bottom"
+        elif (
+            state.rep_state == "bottom"
+            and smooth_knee >= self.STANDING_THRESHOLD
+            and state.frame_index - state.last_rep_frame_index >= self.MIN_REP_FRAMES
+        ):
+            state.rep_count += 1
+            state.rep_state = "ready"
+            state.last_rep_frame_index = state.frame_index
+            rep_event = self._summarize_rep(state, raw)
+
+        state.previous_smoothed_knee = smooth_knee
+        state.frame_index += 1
+        return angles, rep_event
+
+    def _summarize_rep(self, state, last_raw) -> StreamingRepEvent:
+        """현재까지 누적된 current_rep_frames로 rep 결과 산출."""
+        user_angle_seq = [f.angles for f in state.current_rep_frames]
+
+        if state.reference_angles and user_angle_seq:
+            try:
+                sync_rate = compute_sync_rate(state.reference_angles, user_angle_seq)
+            except Exception:
+                sync_rate = 0.0
+        else:
+            sync_rate = 0.0
+
+        knees = [a[0] for a in user_angle_seq if a] or [last_raw.knee_angle]
+        deepest = round(min(knees), 2)
+        torsos = [last_raw.torso_tilt] if not state.current_rep_frames else [last_raw.torso_tilt]
+        mean_torso = round(sum(torsos) / len(torsos), 2)
+
+        if sync_rate >= 70:
+            msg = "자세 양호"
+        elif sync_rate >= 40:
+            msg = "자세 보정 필요"
+        else:
+            msg = "즉시 자세 수정 필요"
+
+        return StreamingRepEvent(
+            rep_number=state.rep_count,
+            sync_rate=sync_rate,
+            deepest_knee_angle=deepest,
+            mean_torso_tilt=mean_torso,
+            feedback_message=msg,
+        )

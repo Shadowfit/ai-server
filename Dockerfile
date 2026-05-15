@@ -13,10 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 RUN python -m grpc_tools.protoc -I./app/proto --python_out=. --grpc_python_out=. ./app/proto/exercise.proto
 
-EXPOSE 8000
+EXPOSE 8000 8585
 
-# [테스트용] 지금은 FastAPI 대신 gRPC 서버를 실행해봅니다.
-CMD ["python", "mock_server.py"]
-
-# [나중에 실전용] FastAPI와 gRPC를 같이 돌릴 때 다시 uvicorn으로 복구
-#CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# FastAPI(8000) + gRPC(8585)를 한 프로세스에서 함께 실행
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

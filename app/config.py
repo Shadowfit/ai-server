@@ -24,6 +24,15 @@ class Settings(BaseSettings):
     # Spring Boot 백엔드 URL (전처리 결과 저장용)
     BACKEND_URL: str = "http://localhost:8080/api/v1"
 
+    # 내부 서비스 간 공유 비밀키 (Spring과 동일한 값이어야 함)
+    INTERNAL_API_TOKEN: str = ""
+
+    # Spring gRPC 서버 주소 (콜백 대상)
+    BACKEND_GRPC_ADDRESS: str = "shadowfit-backend:6565"
+
+    # FastAPI gRPC 서버 포트
+    AI_GRPC_PORT: int = 8585
+
     # CORS 허용 출처
     CORS_ORIGINS: list[str] = ["*"]
 
