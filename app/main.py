@@ -12,6 +12,10 @@ from app.config import settings
 from app.core.mediapipe_detector import get_detector
 from app.grpc.server import run_grpc_server, stop_grpc_server
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 
