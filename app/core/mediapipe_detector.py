@@ -7,6 +7,7 @@ ASCII 경로 junction으로 우회한다.
 import os
 import subprocess
 import tempfile
+import threading
 
 import numpy as np
 
@@ -104,12 +105,13 @@ class PoseDetector:
         self._pose.close()
 
 
-# 싱글톤 인스턴스
-_detector: PoseDetector | None = None
+# 스레드별 인스턴스 — MediaPipe Pose는 thread-safe 하지 않으므로 호출 스레드마다 분리.
+_thread_local = threading.local()
 
 
 def get_detector() -> PoseDetector:
-    global _detector
-    if _detector is None:
-        _detector = PoseDetector()
-    return _detector
+    detector = getattr(_thread_local, "detector", None)
+    if detector is None:
+        detector = PoseDetector()
+        _thread_local.detector = detector
+    return detector

@@ -40,8 +40,13 @@ def _landmarks_to_json(landmarks: list[Landmark]) -> str:
 
 
 @router.post("", response_model=PoseResponse)
-async def detect_pose(req: PoseRequest):
-    """Base64 이미지 → 관절 감지 + (선택) 세션 누적 분석."""
+def detect_pose(req: PoseRequest):
+    """Base64 이미지 → 관절 감지 + (선택) 세션 누적 분석.
+
+    MediaPipe 추론, OpenCV 변환, Spring 콜백 gRPC가 모두 동기 블로킹이라
+    `async def`로 두면 이벤트 루프를 점유해 다른 요청을 굶긴다. FastAPI는
+    `def` 핸들러를 자동으로 threadpool에서 실행하므로 그대로 두면 된다.
+    """
     image_bgr = base64_to_image(req.image)
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
 

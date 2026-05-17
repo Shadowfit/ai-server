@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 
 import grpc
 
@@ -19,6 +20,12 @@ logger = logging.getLogger(__name__)
 _channel: grpc.Channel | None = None
 _stub: exercise_pb2_grpc.ExerciseServiceStub | None = None
 _lock = threading.Lock()
+
+# CompleteAnalysis 콜백이 실패하면 세션 결과가 영구 유실되므로 재시도한다.
+# 3회 시도, 시도 사이 1s → 3s 백오프 (총 worst-case 4초). 최종 실패 시
+# ERROR 로그만 남기고 포기 — 장기 장애 복구는 별도 영구 큐가 필요하다.
+_COMPLETE_MAX_ATTEMPTS = 3
+_COMPLETE_BACKOFF_SECONDS = (1.0, 3.0)
 
 
 def auth_metadata() -> tuple[tuple[str, str], ...]:
@@ -63,21 +70,42 @@ def report_complete_analysis(
     min_sync_rate: float = 0.0,
     calories_burned: float = 0.0,
 ) -> None:
-    """최종 분석 결과를 Spring에 콜백."""
-    try:
-        request = exercise_pb2.SessionCompleteRequest(
-            session_id=session_id,
-            total_reps=total_reps,
-            avg_sync_rate=avg_sync_rate,
-            max_sync_rate=max_sync_rate,
-            min_sync_rate=min_sync_rate,
-            calories_burned=calories_burned,
-        )
-        response = get_stub().CompleteAnalysis(request, metadata=auth_metadata())
-        logger.info(
-            "[AI → Spring] CompleteAnalysis (session=%s, status=%s)",
-            session_id,
-            response.status,
-        )
-    except grpc.RpcError as e:
-        logger.error("[AI → Spring] CompleteAnalysis 실패: %s", e.details())
+    """최종 분석 결과를 Spring에 콜백. 실패 시 지수 백오프로 재시도."""
+    request = exercise_pb2.SessionCompleteRequest(
+        session_id=session_id,
+        total_reps=total_reps,
+        avg_sync_rate=avg_sync_rate,
+        max_sync_rate=max_sync_rate,
+        min_sync_rate=min_sync_rate,
+        calories_burned=calories_burned,
+    )
+
+    for attempt in range(1, _COMPLETE_MAX_ATTEMPTS + 1):
+        try:
+            response = get_stub().CompleteAnalysis(request, metadata=auth_metadata())
+            logger.info(
+                "[AI → Spring] CompleteAnalysis 성공 (session=%s, status=%s, attempt=%d)",
+                session_id,
+                response.status,
+                attempt,
+            )
+            return
+        except grpc.RpcError as e:
+            if attempt >= _COMPLETE_MAX_ATTEMPTS:
+                logger.error(
+                    "[AI → Spring] CompleteAnalysis 최종 실패 (session=%s, attempts=%d): %s",
+                    session_id,
+                    attempt,
+                    e.details(),
+                )
+                return
+            wait = _COMPLETE_BACKOFF_SECONDS[attempt - 1]
+            logger.warning(
+                "[AI → Spring] CompleteAnalysis 실패 — %.1fs 후 재시도 (session=%s, %d/%d): %s",
+                wait,
+                session_id,
+                attempt,
+                _COMPLETE_MAX_ATTEMPTS,
+                e.details(),
+            )
+            time.sleep(wait)
