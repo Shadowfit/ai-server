@@ -19,9 +19,6 @@ service ExerciseService {
   // 3. 분석 결과 배치 저장 (FastAPI -> Spring)
   rpc SavePoseDataBatch (PoseDataBatchRequest) returns (PoseDataResponse);
 
-  // 4. 최종 결과 조회 (Spring -> FastAPI)
-  rpc GetFinalPoseData (SessionRequest) returns (PoseDataList);
-
   rpc CompleteAnalysis (SessionCompleteRequest) returns (SessionCompleteResponse);
 
   // ✅ 사용자가 운동을 중단했을 때 AI 서버에 알리는 명령
@@ -93,14 +90,6 @@ message SessionCompleteResponse {
 // ------------------------------------------------------------
 // 3. 기존 데이터 저장 관련 메시지 (유지)
 // ------------------------------------------------------------
-
-message SessionRequest {
-  int64 session_id = 1;
-}
-
-message PoseDataList {
-  repeated PoseDataResponse pose_data = 1;
-}
 
 message PoseDataRequest {
   double timestamp_sec = 1;
