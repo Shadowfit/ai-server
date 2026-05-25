@@ -23,6 +23,9 @@ service ExerciseService {
 
   // ✅ 사용자가 운동을 중단했을 때 AI 서버에 알리는 명령
   rpc StopAnalysis (StopRequest) returns (StopResponse);
+
+  // 4. TTS 피드백 발화 이벤트 batch 저장 (FastAPI -> Spring, BT-SET)
+  rpc ReportFeedbackBatch (FeedbackBatchRequest) returns (FeedbackBatchResponse);
 }
 
 // ------------------------------------------------------------
@@ -118,4 +121,29 @@ message StopResponse {
   bool success = 1;
   string message = 2;
   int64 session_id = 3;
+}
+
+// ------------------------------------------------------------
+// 4. TTS 피드백 batch (BT-SET, 분기 2.A.BT)
+// AI 가 세트 경계마다 또는 세션 종료 시점에 발화 이벤트를 묶어 보낸다.
+// 멱등성: Spring 측 uniqueKey (session_id, occurred_at, feedback_type) +
+// INSERT IGNORE 로 retry 안전.
+// ------------------------------------------------------------
+
+message FeedbackEvent {
+  string feedback_type = 1;                    // 8종 enum 중 하나 (KNEE_OUT 등)
+  double sync_rate_at_trigger = 2;
+  google.protobuf.Timestamp occurred_at = 3;
+}
+
+message FeedbackBatchRequest {
+  int64 session_id = 1;
+  int32 set_no = 2;                            // 1-based. BT-NONE 호환 시 1 고정
+  bool is_final = 3;                           // 마지막 batch 여부
+  repeated FeedbackEvent events = 4;
+}
+
+message FeedbackBatchResponse {
+  int64 session_id = 1;
+  int32 saved_count = 2;                       // INSERT 된 row 수 (중복 흡수 제외)
 }
