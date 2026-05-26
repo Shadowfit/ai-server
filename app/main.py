@@ -11,6 +11,7 @@ from app.api.router import api_router
 from app.config import settings
 from app.core.mediapipe_detector import get_detector
 from app.grpc.server import run_grpc_server, stop_grpc_server
+from app.middleware.auth import InternalAuthMiddleware
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,6 +52,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# 분기 H2 (프론트 → AI 직결) 대응 Bearer 토큰 검증.
+# Starlette 는 나중에 add 한 미들웨어를 바깥쪽에 두므로 이 줄이 가장 바깥(요청 진입 시 첫 통과 지점)이 된다.
+# OPTIONS preflight 와 /health 등 공개 경로는 미들웨어 내부에서 우회한다.
+app.add_middleware(InternalAuthMiddleware)
 
 app.include_router(api_router)
 
