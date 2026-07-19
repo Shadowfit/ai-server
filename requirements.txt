@@ -13,7 +13,7 @@ python-multipart==0.0.20
 
 grpcio>=1.62.1
 grpcio-tools>=1.62.1
-protobuf==4.25.3
+protobuf==4.25.8
 
 # fastapi.testclient 가 사용. 운영에서도 ai-server 가 외부 호출 시 활용 가능
 httpx==0.28.1
