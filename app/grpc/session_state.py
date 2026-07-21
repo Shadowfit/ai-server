@@ -33,7 +33,6 @@ class SessionState:
     session_id: int
     exercise_id: int
     exercise_type: str = "squat"
-    persona: str = "BEGINNER"
     reference_angles: list[list[float]] = field(default_factory=list)
 
     # 진행 중인 rep에 누적되는 프레임들
@@ -64,14 +63,12 @@ class SessionStateRegistry:
         exercise_id: int,
         reference_angles: list[list[float]],
         exercise_type: str = "squat",
-        persona: str = "BEGINNER",
     ) -> SessionState:
         with self._lock:
             state = SessionState(
                 session_id=session_id,
                 exercise_id=exercise_id,
                 exercise_type=exercise_type,
-                persona=persona,
                 reference_angles=reference_angles,
             )
             self._sessions[session_id] = state

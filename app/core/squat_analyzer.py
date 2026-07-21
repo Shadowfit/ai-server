@@ -9,11 +9,7 @@ from app.core.angle_calculator import calculate_angle, extract_angles
 from app.core.dtw_calculator import compute_sync_rate
 from app.models.pose import Landmark
 from app.models.video import SquatAnalysisResult, SquatFrameMetrics
-from app.utils.constants import LANDMARK, SYNC_THRESHOLDS
-
-# 즉시 수정 필요 컷 / 양호 컷 비율. 기존 고정값(양호>=70, 즉시수정<40)의 비율을 유지한 채
-# 페르소나별 "양호" 기준(SYNC_THRESHOLDS)에 비례 스케일한다.
-_LOW_CUT_RATIO = 40 / 70
+from app.utils.constants import LANDMARK
 
 
 @dataclass
@@ -317,12 +313,9 @@ class StreamingSquatAnalyzer:
         torsos = [last_raw.torso_tilt] if not state.current_rep_frames else [last_raw.torso_tilt]
         mean_torso = round(sum(torsos) / len(torsos), 2)
 
-        pass_threshold = SYNC_THRESHOLDS.get(state.persona, SYNC_THRESHOLDS["BEGINNER"])
-        low_threshold = pass_threshold * _LOW_CUT_RATIO
-
-        if sync_rate >= pass_threshold:
+        if sync_rate >= 70:
             msg = "자세 양호"
-        elif sync_rate >= low_threshold:
+        elif sync_rate >= 40:
             msg = "자세 보정 필요"
         else:
             msg = "즉시 자세 수정 필요"

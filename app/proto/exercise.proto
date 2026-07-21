@@ -60,8 +60,6 @@ message AnalyzeRequest {
   string reference_source = 2;
   // [핵심] 스프링 DB에서 조회한 기준 좌표 리스트를 여기에 담아서 보냅니다.
   repeated PoseDataRequest reference_poses = 4;
-  // 페르소나별 싱크로율 임계값 계산용 (BEGINNER/ADVANCED/DIET/REHAB). 빈 문자열이면 AI측에서 BEGINNER로 취급.
-  string persona = 5;
 }
 
 message AnalyzeResponse {
