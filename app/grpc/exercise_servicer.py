@@ -59,10 +59,12 @@ class ExerciseServicer(exercise_pb2_grpc.ExerciseServiceServicer):
         """[Spring → FastAPI] 운동 분석 세션 시작."""
         session_id = request.session_id
         exercise_id = request.exercise_id
+        persona = request.persona or "BEGINNER"
         logger.info(
-            "[Spring → AI] StartAnalysis 수신 (session=%s, exercise=%s, reference_frames=%d)",
+            "[Spring → AI] StartAnalysis 수신 (session=%s, exercise=%s, persona=%s, reference_frames=%d)",
             session_id,
             exercise_id,
+            persona,
             len(request.reference_poses),
         )
 
@@ -83,6 +85,7 @@ class ExerciseServicer(exercise_pb2_grpc.ExerciseServiceServicer):
             exercise_id=exercise_id,
             reference_angles=reference_angles,
             exercise_type=exercise_type,
+            persona=persona,
         )
 
         now = Timestamp()

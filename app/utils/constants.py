@@ -40,10 +40,10 @@ EXERCISE_ANGLES = {
     ],
 }
 
-# 동기화율 임계값 (페르소나별)
+# 동기화율 임계값 (페르소나별). sync_rate와 동일하게 0~100 스케일.
 SYNC_THRESHOLDS = {
-    "BEGINNER": 0.60,
-    "ADVANCED": 0.85,
-    "DIET": 0.70,
-    "REHAB": 0.50,
+    "BEGINNER": 60.0,
+    "ADVANCED": 85.0,
+    "DIET": 70.0,
+    "REHAB": 50.0,
 }
