@@ -10,12 +10,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.config import settings
 from app.core.mediapipe_detector import get_detector
+from app.grpc.correlation import install_log_record_factory
 from app.grpc.server import run_grpc_server, stop_grpc_server
 from app.middleware.auth import InternalAuthMiddleware
 
+# basicConfig 보다 먼저 — 포맷의 %(cid)s 를 채울 속성을 LogRecord 에 주입하는 팩토리를 건다.
+# Spring 로그의 [cid|sessionId] 와 같은 id 라서 두 서비스 로그를 한 줄기로 이어 읽을 수 있다.
+install_log_record_factory()
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    format="%(asctime)s [%(levelname)s] [%(cid)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
 

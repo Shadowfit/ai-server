@@ -14,6 +14,7 @@ import grpc
 
 import exercise_pb2_grpc
 from app.config import settings
+from app.grpc.correlation import CorrelationServerInterceptor
 from app.grpc.exercise_servicer import ExerciseServicer
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,11 @@ def run_grpc_server() -> None:
     with _server_lock:
         _server = grpc.server(
             futures.ThreadPoolExecutor(max_workers=10),
-            interceptors=[AuthInterceptor(settings.INTERNAL_API_TOKEN)],
+            # correlation 인터셉터를 앞에 둬서 인증 거부된 호출의 로그에도 id 가 남게 한다.
+            interceptors=[
+                CorrelationServerInterceptor(),
+                AuthInterceptor(settings.INTERNAL_API_TOKEN),
+            ],
         )
         exercise_pb2_grpc.add_ExerciseServiceServicer_to_server(
             ExerciseServicer(), _server
