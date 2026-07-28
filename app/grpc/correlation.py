@@ -8,10 +8,16 @@ Spring 이 gRPC metadata 로 실어보낸 id 를 받아 이 프로세스의 로�
 ContextVar 는 스레드마다 독립이므로 인터셉터에서 set 하면 핸들러가 못 본다 — 그래서 아래
 CorrelationServerInterceptor 는 값을 세팅하지 않고 **핸들러 함수 자체를 감싸서** 핸들러가
 실행되는 그 스레드 안에서 set/reset 한다.
+
+같은 이유로 `threading.Thread` 는 부모의 ContextVar 를 **상속하지 않는다**(상속하려면
+`contextvars.copy_context()` 가 필요). 핸들러가 백그라운드 스레드로 콜백을 띄울 때 그냥
+넘기면 그 스레드의 id 는 빈 값이라, 콜백이 자기를 촉발한 요청과 이어지지 않는다. 그래서
+스레드로 넘기는 함수는 `wrap()` 으로 감싼다 (Spring 의 `CorrelationIds.wrap(Runnable)` 대응).
 """
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
 import uuid
@@ -46,13 +52,50 @@ def get_correlation_id() -> str:
     return _correlation_id.get()
 
 
+def ensure_correlation_id(prefix: str = "ai") -> str:
+    """컨텍스트에 id 가 있으면 그대로, 없으면 새로 발급해 **컨텍스트에 심고** 반환한다.
+
+    발급만 하고 버리지 않는 이유: 그러면 나가는 metadata 에는 id 가 붙는데 정작 같은 흐름이
+    남기는 로그에는 `·` 가 찍혀 둘을 이을 수 없고, 같은 작업을 재시도할 때마다 서로 다른
+    id 가 발급돼 한 작업의 시도들끼리도 안 묶인다.
+    """
+    current = _correlation_id.get()
+    if current:
+        return current
+    generated = new_correlation_id(prefix)
+    _correlation_id.set(generated)
+    return generated
+
+
 def correlation_metadata() -> tuple[tuple[str, str], ...]:
     """Spring 으로 나가는 호출에 붙일 metadata.
 
     현재 컨텍스트에 id 가 없으면(백그라운드 스레드에서 시작된 콜백 등) 새로 발급한다 —
     아무것도 못 잇는 것보다는 "AI 에서 시작된 흐름"이라는 id 라도 있는 편이 낫다.
     """
-    return ((METADATA_KEY, get_correlation_id() or new_correlation_id()),)
+    return ((METADATA_KEY, ensure_correlation_id()),)
+
+
+def wrap(fn):
+    """스레드 경계로 넘길 함수를 감싼다 — **호출 시점**의 id 를 캡처해 **실행 시점**에 복원.
+
+    `threading.Thread(target=...)` 는 부모 컨텍스트를 상속하지 않으므로, 감싸지 않으면
+    백그라운드 콜백이 자기를 촉발한 요청과 이어지지 않는다. 캡처를 여기(부모 스레드)서
+    하는 게 핵심 — 실행 시점에 읽으면 이미 남의 스레드라 항상 비어 있다.
+
+    워커 스레드가 재사용될 수 있으므로 `finally` 로 반드시 원복한다.
+    """
+    captured = _correlation_id.get()
+
+    @functools.wraps(fn)
+    def runner(*args, **kwargs):
+        token = _correlation_id.set(captured)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _correlation_id.reset(token)
+
+    return runner
 
 
 class CorrelationServerInterceptor(grpc.ServerInterceptor):

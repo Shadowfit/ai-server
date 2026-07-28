@@ -86,9 +86,13 @@ def report_complete_analysis(
         calories_burned=calories_burned,
     )
 
+    # 재시도 루프 **밖에서** 한 번만 만든다 — 안에서 만들면 컨텍스트에 id 가 없을 때
+    # 매 attempt 마다 새 id 가 발급돼 같은 CompleteAnalysis 의 시도들이 서로 안 묶인다.
+    metadata = call_metadata()
+
     for attempt in range(1, _COMPLETE_MAX_ATTEMPTS + 1):
         try:
-            response = get_stub().CompleteAnalysis(request, metadata=call_metadata())
+            response = get_stub().CompleteAnalysis(request, metadata=metadata)
             logger.info(
                 "[AI → Spring] CompleteAnalysis 성공 (session=%s, status=%s, attempt=%d)",
                 session_id,
