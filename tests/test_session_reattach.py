@@ -97,7 +97,9 @@ def test_create_는_여전히_덮어쓴다():
 def test_동시_재부착에서_하나만_생성한다():
     """확인과 생성이 한 Lock 안에 있는지 — 나뉘어 있으면 그 틈으로 덮어쓰기가 뚫린다."""
     registry = SessionStateRegistry()
-    barrier = threading.Barrier(8)
+    # timeout 필수 — 한 스레드가 create_if_absent 전에 죽으면 나머지가 영구 대기하고 join 도
+    # 안 돌아온다. 그러면 테스트가 "실패"가 아니라 "hang" 이 되어 CI 가 멈춘다.
+    barrier = threading.Barrier(8, timeout=5)
     results: list[tuple[int, bool]] = []
     lock = threading.Lock()
 
