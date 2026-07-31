@@ -99,6 +99,74 @@ class ExerciseServicer(exercise_pb2_grpc.ExerciseServiceServicer):
             status=exercise_pb2.SessionStatus.IN_PROGRESS,
         )
 
+    def ReattachAnalysis(self, request, context):
+        """[Spring → FastAPI] 진행 중이던 세션의 분석 상태를 되살린다 (이슈 #59 2단계).
+
+        StartAnalysis 와 분리한 이유는 **멱등 규칙이 정반대**라서다. StartAnalysis 는 새 세션이니
+        상태를 새로 만드는 게 맞고, 재부착은 살아있는 상태를 절대 덮어쓰면 안 된다. 한 핸들러에
+        분기로 섞으면 둘 중 하나는 조용히 틀린 동작을 하게 된다.
+
+        되살리는 것 / 못 되살리는 것:
+          - 되살림: rep 카운트(Spring 이 pose_data 의 MAX(rep_number) 로 계산해 주입),
+                    기준 각도·persona·exercise (원래 Spring 이 DB 에서 읽어 넣어주던 것)
+          - 못 되살림: rep_state, frame_index, 스무딩 이력, 진행 중이던 rep 의 프레임
+            → 재개 직후 몇 프레임 동안 자세 판정이 흔들릴 수 있다. 감수하기로 한 결정이며
+              (docs/decisions/session-resume-and-ai-state.md §4-0, 2026-07-31) 클라에는
+              Spring 이 analyzerStateReset 으로 알린다.
+        """
+        session_id = request.session_id
+        logger.info(
+            "[Spring → AI] ReattachAnalysis 수신 (session=%s, exercise=%s, initial_rep_count=%d)",
+            session_id,
+            request.exercise_id,
+            request.initial_rep_count,
+        )
+
+        # StartAnalysis 와 동일 — exercise_id → exercise_type 매핑은 아직 없다(squat-first).
+        exercise_type = "squat"
+        reference_angles = _parse_reference_poses(request.reference_poses, exercise_type)
+
+        if not reference_angles:
+            # 시작 경로는 경고만 하고 진행한다(sync_rate 0). 재부착은 다르게 취급한다 — 이미 rep 을
+            # 쌓아둔 세션을 sync_rate 가 전부 0 으로 나오는 상태로 이어붙이면, 사용자는 이어진 줄
+            # 알지만 뒷부분 기록만 조용히 망가진다. 차라리 실패로 돌려 새로 시작하게 한다.
+            logger.error("세션 %s 재부착 실패 — 기준 각도 시퀀스가 비어 있음", session_id)
+            return exercise_pb2.ReattachResponse(
+                success=False,
+                session_id=session_id,
+                message="기준 좌표를 복원하지 못했습니다.",
+            )
+
+        state, already_active = get_registry().create_if_absent(
+            session_id=session_id,
+            exercise_id=request.exercise_id,
+            reference_angles=reference_angles,
+            exercise_type=exercise_type,
+            persona=request.persona or "BEGINNER",
+            initial_rep_count=request.initial_rep_count,
+        )
+
+        if already_active:
+            logger.info(
+                "세션 %s 는 이미 분석 중 — 상태 보존 (rep_count=%d). 중복 호출이거나 재시도다.",
+                session_id,
+                state.rep_count,
+            )
+        else:
+            logger.info(
+                "세션 %s 재부착 완료 — rep %d 부터 이어서 셈 (분석기 내부 상태는 초기화)",
+                session_id,
+                state.rep_count,
+            )
+
+        return exercise_pb2.ReattachResponse(
+            success=True,
+            session_id=session_id,
+            rep_count=state.rep_count,
+            already_active=already_active,
+            message="이미 분석 중" if already_active else "재부착 완료",
+        )
+
     def StopAnalysis(self, request, context):
         """[Spring → FastAPI] 사용자 강제 중단. 누적 결과로 CompleteAnalysis 콜백."""
         session_id = request.session_id
@@ -152,14 +220,24 @@ def _send_complete_analysis(state) -> None:
     time.sleep(0.1)
 
     reps = state.completed_reps
-    total_reps = len(reps)
-    if total_reps == 0:
+
+    # 총 횟수는 len(completed_reps) 가 아니라 rep_count 를 쓴다 (이슈 #59 2단계).
+    # 재부착하면 completed_reps 는 재부착 이후 rep 만 담고 있지만 rep_count 는 Spring 이 주입한
+    # 재부착 이전 rep 수에서 이어서 올라간다. len() 을 쓰면 이어하기 후 총 횟수가 초기화된다.
+    # 재부착이 없었던 세션에서는 rep_count == len(completed_reps) 라 값이 달라지지 않는다.
+    total_reps = state.rep_count
+
+    if not reps:
         avg = max_v = min_v = 0.0
     else:
         rates = [r.sync_rate for r in reps]
-        avg = round(sum(rates) / total_reps, 2)
+        avg = round(sum(rates) / len(reps), 2)
         max_v = round(max(rates), 2)
         min_v = round(min(rates), 2)
+        # ⚠️ 알려진 한계: 싱크 통계는 **재부착 이후 rep 만** 반영한다. 재부착 이전 rep 의 sync_rate 는
+        # Spring 의 pose_data 에는 남아 있지만 AI 메모리에는 없다. 즉 재부착이 일어난 세션은
+        # "총 횟수는 정확하고 평균 싱크는 후반 구간 기준"이 된다.
+        # (docs/decisions/session-resume-and-ai-state.md §4-0)
 
     spring_client.report_complete_analysis(
         session_id=state.session_id,

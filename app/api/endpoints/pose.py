@@ -110,6 +110,8 @@ def detect_pose(req: PoseRequest):
             joint_coordinates=f.joint_coordinates,
             sync_rate=rep_event.sync_rate,
             feedback_message=rep_event.feedback_message,
+            # 재부착 시 Spring 이 MAX(rep_number) 로 rep 카운트를 복원하는 근거 (이슈 #59 2단계)
+            rep_number=rep_event.rep_number,
         )
         for f in state.current_rep_frames
     ]

@@ -65,6 +65,7 @@ class SessionStateRegistry:
         reference_angles: list[list[float]],
         exercise_type: str = "squat",
         persona: str = "BEGINNER",
+        initial_rep_count: int = 0,
     ) -> SessionState:
         with self._lock:
             state = SessionState(
@@ -73,9 +74,47 @@ class SessionStateRegistry:
                 exercise_type=exercise_type,
                 persona=persona,
                 reference_angles=reference_angles,
+                rep_count=initial_rep_count,
             )
             self._sessions[session_id] = state
             return state
+
+    def create_if_absent(
+        self,
+        session_id: int,
+        exercise_id: int,
+        reference_angles: list[list[float]],
+        exercise_type: str = "squat",
+        persona: str = "BEGINNER",
+        initial_rep_count: int = 0,
+    ) -> tuple[SessionState, bool]:
+        """재부착 전용. 상태가 이미 있으면 **보존하고** 그대로 돌려준다.
+
+        create() 는 같은 id 로 다시 부르면 기존 상태를 덮어쓴다. 재부착 경로에서 그러면 중복 호출·
+        네트워크 재시도·빠른 이탈 후 복귀 때 진행 중이던 rep 과 스무딩 이력을 통째로 버리게 된다 —
+        정작 재부착이 필요 없는 경우에 피해를 주는 셈이다.
+
+        확인과 생성이 한 Lock 안에 있어야 한다. get() 후 create() 로 나누면 그 사이에 다른 요청이
+        상태를 만들 수 있고, 그러면 덮어쓰기를 막으려던 가드가 그대로 뚫린다.
+
+        Returns:
+            (상태, already_active) — already_active 가 True 면 아무것도 만들지 않았다는 뜻이다.
+        """
+        with self._lock:
+            existing = self._sessions.get(session_id)
+            if existing is not None:
+                return existing, True
+
+            state = SessionState(
+                session_id=session_id,
+                exercise_id=exercise_id,
+                exercise_type=exercise_type,
+                persona=persona,
+                reference_angles=reference_angles,
+                rep_count=initial_rep_count,
+            )
+            self._sessions[session_id] = state
+            return state, False
 
     def get(self, session_id: int) -> SessionState | None:
         with self._lock:

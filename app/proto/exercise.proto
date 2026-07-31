@@ -16,6 +16,12 @@ service ExerciseService {
   // [수정] 실행 단계: 세션 정보와 함께 'DB에 저장된 기준 좌표'를 전달 (Spring -> FastAPI)
   rpc StartAnalysis (AnalyzeRequest) returns (AnalyzeResponse);
 
+  // 재부착: 이미 IN_PROGRESS 인 세션의 AI 상태를 DB 값으로 되살린다 (Spring -> FastAPI).
+  // StartAnalysis 와 분리한 이유 — 이 RPC 는 '상태가 이미 있으면 보존하고 성공 반환'이 계약이라
+  // 정상 시작 경로와 멱등 규칙이 정반대다. 한 핸들러에 섞으면 시작 요청이 조용히 no-op 이 될 수 있다.
+  // (docs/decisions/session-resume-and-ai-state.md §4-B, 이슈 #59 2단계)
+  rpc ReattachAnalysis (ReattachRequest) returns (ReattachResponse);
+
   // 3. 분석 결과 배치 저장 (FastAPI -> Spring)
   rpc SavePoseDataBatch (PoseDataBatchRequest) returns (PoseDataResponse);
 
@@ -72,6 +78,29 @@ message AnalyzeResponse {
   SessionStatus status = 5;                 // 세션 상태
 }
 
+// 1-2. 재부착용 메시지 (이슈 #59 2단계)
+message ReattachRequest {
+  int64 exercise_id = 1;
+  int64 session_id = 2;
+  // StartAnalysis 와 동일하게 Spring 이 DB 에서 읽어 채워준다 — AI 는 기준 좌표를 보관하지 않는다.
+  repeated PoseDataRequest reference_poses = 3;
+  string persona = 4;
+  // pose_data 의 MAX(rep_number). AI 는 여기서부터 이어서 센다.
+  // 이 값이 없으면 재부착 후 total_reps 가 재부착 이후분만 집계된다(CompleteAnalysis 가 AI 값을 그대로 쓰므로).
+  int32 initial_rep_count = 5;
+}
+
+message ReattachResponse {
+  bool success = 1;
+  int64 session_id = 2;
+  // 재부착 후 AI 가 이어서 셀 기준 rep 수. already_active 면 살아있던 상태의 현재 값이다.
+  int32 rep_count = 3;
+  // true = AI 상태가 이미 살아있어 아무것도 하지 않았다(멱등 경로).
+  // 중복 호출·네트워크 재시도로 진행 중이던 rep 과 스무딩 이력이 날아가는 것을 막는다.
+  bool already_active = 4;
+  string message = 5;
+}
+
 // ------------------------------------------------------------
 // 2. 세션 종료 관련 메시지 (PUT /complete 대응)
 // ------------------------------------------------------------
@@ -101,6 +130,11 @@ message PoseDataRequest {
   string joint_coordinates = 2;
   double sync_rate = 3;
   string feedback_message = 4;
+  // 이 프레임이 속한 rep 번호 (1-based). 재부착 시 MAX(rep_number) 로 rep 카운트를 복원하는 근거다.
+  // sync_rate 연속구간으로 rep 을 추측하면 인접 rep 의 sync_rate 가 같을 때 병합돼 undercount 된다
+  // (docs/decisions/session-resume-and-ai-state.md §3-3).
+  // reference_poses / extracted_poses 로 쓰일 때는 rep 개념이 없어 0 이다.
+  int32 rep_number = 5;
 }
 
 message PoseDataBatchRequest {

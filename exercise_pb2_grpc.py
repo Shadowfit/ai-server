@@ -25,6 +25,11 @@ class ExerciseServiceStub(object):
                 request_serializer=exercise__pb2.AnalyzeRequest.SerializeToString,
                 response_deserializer=exercise__pb2.AnalyzeResponse.FromString,
                 )
+        self.ReattachAnalysis = channel.unary_unary(
+                '/ExerciseService/ReattachAnalysis',
+                request_serializer=exercise__pb2.ReattachRequest.SerializeToString,
+                response_deserializer=exercise__pb2.ReattachResponse.FromString,
+                )
         self.SavePoseDataBatch = channel.unary_unary(
                 '/ExerciseService/SavePoseDataBatch',
                 request_serializer=exercise__pb2.PoseDataBatchRequest.SerializeToString,
@@ -60,6 +65,16 @@ class ExerciseServiceServicer(object):
 
     def StartAnalysis(self, request, context):
         """[수정] 실행 단계: 세션 정보와 함께 'DB에 저장된 기준 좌표'를 전달 (Spring -> FastAPI)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReattachAnalysis(self, request, context):
+        """재부착: 이미 IN_PROGRESS 인 세션의 AI 상태를 DB 값으로 되살린다 (Spring -> FastAPI).
+        StartAnalysis 와 분리한 이유 — 이 RPC 는 '상태가 이미 있으면 보존하고 성공 반환'이 계약이라
+        정상 시작 경로와 멱등 규칙이 정반대다. 한 핸들러에 섞으면 시작 요청이 조용히 no-op 이 될 수 있다.
+        (docs/decisions/session-resume-and-ai-state.md §4-B, 이슈 #59 2단계)
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -104,6 +119,11 @@ def add_ExerciseServiceServicer_to_server(servicer, server):
                     servicer.StartAnalysis,
                     request_deserializer=exercise__pb2.AnalyzeRequest.FromString,
                     response_serializer=exercise__pb2.AnalyzeResponse.SerializeToString,
+            ),
+            'ReattachAnalysis': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReattachAnalysis,
+                    request_deserializer=exercise__pb2.ReattachRequest.FromString,
+                    response_serializer=exercise__pb2.ReattachResponse.SerializeToString,
             ),
             'SavePoseDataBatch': grpc.unary_unary_rpc_method_handler(
                     servicer.SavePoseDataBatch,
@@ -167,6 +187,23 @@ class ExerciseService(object):
         return grpc.experimental.unary_unary(request, target, '/ExerciseService/StartAnalysis',
             exercise__pb2.AnalyzeRequest.SerializeToString,
             exercise__pb2.AnalyzeResponse.FromString,
+            options, channel_credentials,
+            insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
+
+    @staticmethod
+    def ReattachAnalysis(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(request, target, '/ExerciseService/ReattachAnalysis',
+            exercise__pb2.ReattachRequest.SerializeToString,
+            exercise__pb2.ReattachResponse.FromString,
             options, channel_credentials,
             insecure, call_credentials, compression, wait_for_ready, timeout, metadata)
 
