@@ -101,8 +101,9 @@ class StreamingDepthMetricTests(unittest.TestCase):
             measured.append(smoothed)
 
         self.assertEqual(len(set(measured)), len(measured), "프레임마다 값이 달라야 한다")
-        # 내려가는 구간이므로 단조 감소여야 한다(평활 때문에 실제 각도보다 완만하다)
-        self.assertTrue(all(b < a for a, b in zip(measured, measured[1:])))
+        # 내려가는 구간이므로 단조 감소여야 한다(평활 때문에 실제 각도보다 완만하다).
+        # strict=False 는 의도적이다 — measured[1:] 가 한 칸 짧은 것이 이 비교의 전제다.
+        self.assertTrue(all(b < a for a, b in zip(measured, measured[1:], strict=False)))
 
     def test_depth_metric_is_smoothed_not_raw(self) -> None:
         """평활값이다 — 한 프레임이 튀어도 그 프레임이 곧바로 최소값이 되지 않는다.
