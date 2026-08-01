@@ -135,6 +135,21 @@ message PoseDataRequest {
   // (docs/decisions/session-resume-and-ai-state.md §3-3).
   // reference_poses / extracted_poses 로 쓰일 때는 rep 개념이 없어 0 이다.
   int32 rep_number = 5;
+  // 좌우 무릎각 평균을 최근 3프레임으로 평활한 값(도). 작을수록 깊게 앉은 것이다.
+  // sync_rate 는 rep 단위로 채점돼 프레임마다 복제되므로 rep 안에서 상수다 — 즉 "이 rep 의
+  // 어느 순간이 바닥이었나"를 sync_rate 로는 고를 수 없다. 그런데 joint_coordinates 는 프레임마다
+  // 다르므로 어느 프레임을 남기느냐가 리포트에 그려질 자세를 결정한다. Spring 이 다운샘플에서
+  // 남길 프레임과 리포트 대표 프레임을 고르는 기준이 이 값이다
+  // (docs/decisions/worst-section-rep-resolution.md §4-ㄹ).
+  //
+  // 정의는 rep 경계를 판정하는 값과 같다 — 그래야 "이 rep 의 바닥"과 "가장 깊은 프레임"이 어긋나지
+  // 않는다. 평활값인 것은 의도적이다: 랜드마크가 한 프레임 튀면 그 프레임이 대표로 뽑혀 이상한
+  // 뼈대가 리포트에 그려진다.
+  //
+  // proto3 라 구버전 AI(미전송)에서는 0 이 온다. 0 은 "미상"이며 유효한 각도값이 아니다
+  // (스쿼트 무릎각은 0 이 될 수 없다) — Spring 은 0 인 프레임을 대표 후보에서 제외하고
+  // 기존처럼 중앙 프레임으로 떨어진다. reference_poses / extracted_poses 로 쓰일 때도 0 이다.
+  double smoothed_knee_angle = 6;
 }
 
 message PoseDataBatchRequest {

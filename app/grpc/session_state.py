@@ -19,6 +19,19 @@ class PerRepFrame:
     joint_coordinates: str  # JSON 직렬화된 landmark
     angles: list[float]
 
+    # 좌우 무릎각 평균을 최근 3프레임으로 평활한 값. 작을수록 깊게 앉은 것이다.
+    #
+    # rep 안에서 sync_rate 는 상수라(rep 단위 채점 후 프레임마다 복제) 어느 프레임이
+    # "가장 나빴나"를 sync_rate 로는 고를 수 없다. 그런데 joint_coordinates 는 프레임마다
+    # 다르므로, 어느 프레임을 남기느냐가 리포트에 어떤 자세가 그려지는지를 결정한다.
+    # 그 선택 기준이 이 값이다(decisions/worst-section-rep-resolution.md §4-ㄹ).
+    #
+    # 정의를 상태 머신과 일치시켰다 — rep 경계를 판정하는 값(_extract_raw_metrics 의 좌우 평균을
+    # 3프레임 평활)과 같은 값이라야, "이 rep 의 바닥"과 "가장 깊은 프레임"이 같은 근거를 갖는다.
+    # 원시값이 아니라 평활값인 것은 의도적이다: 랜드마크가 한 프레임 튀면 그 프레임이 대표로
+    # 뽑혀 이상한 뼈대가 리포트에 그려진다. 대가로 최소점이 1~2프레임 밀리지만 다운샘플(R≈5)에 묻힌다.
+    smoothed_knee_angle: float = 0.0
+
 
 @dataclass
 class CompletedRep:

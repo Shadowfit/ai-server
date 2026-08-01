@@ -228,12 +228,28 @@ def analyze_squat_frames(
 
 @dataclass
 class StreamingRepEvent:
-    """rep 1회가 완성될 때마다 발행되는 이벤트."""
+    """rep 1회가 완성될 때마다 발행되는 이벤트.
+
+    ⚠️ deepest_knee_angle · mean_torso_tilt 를 제거했다(이슈 #85). 둘 다 배치 경로의
+    SquatAnalysisResult 에서 이름째 가져온 필드인데, 배치는 그 값을 HTTP 응답으로 실제로
+    돌려주는 반면 스트리밍은 pose.py 가 sync_rate·feedback_message·rep_number 만 읽어
+    **한 번도 소비되지 않았다.** 소비처가 없으니 테스트도 붙지 않았고, 그래서 결함 2건이
+    그대로 남아 있었다:
+
+    - mean_torso_tilt 는 평균이 아니었다 — 삼항 연산자의 양쪽이 글자까지 같아 어느 쪽으로
+      가도 마지막 프레임 한 점이었다. rep 의 마지막 프레임은 정의상 다시 선 자세라
+      "그 rep 동안 얼마나 기울었나"에 가장 안 기운 순간으로 답하고 있었다
+    - deepest_knee_angle 은 angles[0] 즉 **왼쪽 무릎만** 봤다. rep 경계를 판정하는 값은
+      좌우 평균인데(_extract_raw_metrics) 여기만 왼쪽이라, 한쪽으로 기우는 자세에서 둘이 갈렸다
+
+    고치는 대신 지운 이유: 프레임별 깊이 지표(PerRepFrame.smoothed_knee_angle)를 Spring 으로
+    직접 보내게 되면서 rep 요약본이 필요 없어졌다. Spring 이 프레임들에서 직접 최소값을 고르므로
+    같은 사실이 두 곳에 저장되지 않는다. 배치 경로의 SquatAnalysisResult 는 소비처가 있으므로
+    그대로 둔다.
+    """
 
     rep_number: int
     sync_rate: float
-    deepest_knee_angle: float
-    mean_torso_tilt: float
     feedback_message: str
 
 
@@ -257,16 +273,23 @@ class StreamingSquatAnalyzer:
         self,
         state,
         landmarks: list[Landmark],
-    ) -> tuple[list[float] | None, StreamingRepEvent | None]:
+    ) -> tuple[list[float] | None, float | None, StreamingRepEvent | None]:
         """단일 프레임을 처리.
 
         Returns:
-            (angles, rep_event) — angles는 visibility 통과 시 계산된 각도 시퀀스,
-            rep_event는 이 프레임으로 rep 1회가 완성된 경우에만 채워진다.
+            (angles, smoothed_knee_angle, rep_event) — angles는 visibility 통과 시 계산된
+            각도 시퀀스, smoothed_knee_angle은 rep 경계 판정에 쓰는 것과 같은 값(좌우 평균을
+            3프레임 평활)으로 프레임별 깊이 지표다, rep_event는 이 프레임으로 rep 1회가
+            완성된 경우에만 채워진다.
+
+        깊이 지표를 state가 아니라 반환값으로 내보내는 이유: state.previous_smoothed_knee가
+        이미 같은 값을 담지만 그 이름은 "직전 프레임"을 뜻한다. 호출자 입장에서는 방금 처리한
+        프레임의 값이라 이름과 어긋나고, 이 프로젝트는 그런 자리에서 결함이 반복해 나왔다
+        (#78·#79·#80·#85).
         """
         if not landmarks or _frame_visibility_score(landmarks) < self.VISIBILITY_FLOOR:
             state.frame_index += 1
-            return None, None
+            return None, None, None
 
         raw = _extract_raw_metrics(landmarks)
         angles = extract_angles(landmarks, self.exercise_type)
@@ -294,13 +317,13 @@ class StreamingSquatAnalyzer:
             state.rep_count += 1
             state.rep_state = "ready"
             state.last_rep_frame_index = state.frame_index
-            rep_event = self._summarize_rep(state, raw)
+            rep_event = self._summarize_rep(state)
 
         state.previous_smoothed_knee = smooth_knee
         state.frame_index += 1
-        return angles, rep_event
+        return angles, smooth_knee, rep_event
 
-    def _summarize_rep(self, state, last_raw) -> StreamingRepEvent:
+    def _summarize_rep(self, state) -> StreamingRepEvent:
         """현재까지 누적된 current_rep_frames로 rep 결과 산출."""
         user_angle_seq = [f.angles for f in state.current_rep_frames]
 
@@ -311,11 +334,6 @@ class StreamingSquatAnalyzer:
                 sync_rate = 0.0
         else:
             sync_rate = 0.0
-
-        knees = [a[0] for a in user_angle_seq if a] or [last_raw.knee_angle]
-        deepest = round(min(knees), 2)
-        torsos = [last_raw.torso_tilt] if not state.current_rep_frames else [last_raw.torso_tilt]
-        mean_torso = round(sum(torsos) / len(torsos), 2)
 
         pass_threshold = SYNC_THRESHOLDS.get(state.persona, SYNC_THRESHOLDS["BEGINNER"])
         low_threshold = pass_threshold * _LOW_CUT_RATIO
@@ -330,7 +348,5 @@ class StreamingSquatAnalyzer:
         return StreamingRepEvent(
             rep_number=state.rep_count,
             sync_rate=sync_rate,
-            deepest_knee_angle=deepest,
-            mean_torso_tilt=mean_torso,
             feedback_message=msg,
         )

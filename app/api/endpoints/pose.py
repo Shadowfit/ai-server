@@ -74,7 +74,7 @@ def detect_pose(req: PoseRequest):
             success=False, message=f"미지원 운동: {state.exercise_type}"
         )
 
-    angles, rep_event = analyzer.process_frame(state, landmarks)
+    angles, smoothed_knee_angle, rep_event = analyzer.process_frame(state, landmarks)
 
     if angles is None:
         # visibility 부족 — 프레임 스킵
@@ -92,6 +92,7 @@ def detect_pose(req: PoseRequest):
         timestamp_sec=timestamp_sec,
         joint_coordinates=_landmarks_to_json(landmarks),
         angles=angles,
+        smoothed_knee_angle=smoothed_knee_angle,
     )
     state.current_rep_frames.append(frame)
 
@@ -112,6 +113,10 @@ def detect_pose(req: PoseRequest):
             feedback_message=rep_event.feedback_message,
             # 재부착 시 Spring 이 MAX(rep_number) 로 rep 카운트를 복원하는 근거 (이슈 #59 2단계)
             rep_number=rep_event.rep_number,
+            # sync_rate 는 rep 상수라 프레임을 구분하지 못한다. Spring 이 다운샘플에서 어느
+            # 프레임을 남길지, 리포트에서 어느 프레임을 대표로 쓸지 고르는 기준이 이 값이다
+            # (decisions/worst-section-rep-resolution.md §4-ㄹ). 작을수록 깊게 앉은 것.
+            smoothed_knee_angle=f.smoothed_knee_angle,
         )
         for f in state.current_rep_frames
     ]
