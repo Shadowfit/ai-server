@@ -43,6 +43,9 @@ class SessionState:
     rep_count: int = 0
     rep_state: str = "waiting_for_standing"
     last_rep_frame_index: int = -10_000
+    # bottom 상태에 진입한 프레임. rep 완성 시 "바닥에 얼마나 머물렀나"를 재는 데 쓴다 —
+    # 앉아서 쉬는 것과 스쿼트를 가르는 축이다 (이슈 #93).
+    bottom_entry_frame_index: int = 0
     frame_index: int = 0
     previous_smoothed_knee: float | None = None
     recent_raw_knees: list[float] = field(default_factory=list)

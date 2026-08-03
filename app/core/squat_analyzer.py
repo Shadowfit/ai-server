@@ -250,6 +250,19 @@ class StreamingSquatAnalyzer:
     MIN_REP_FRAMES = 4
     VISIBILITY_FLOOR = 0.55
 
+    # bottom 체류 상한 — 이만큼 넘게 앉아 있었으면 스쿼트가 아니라 "쉬고 있었다"로 본다
+    # (이슈 #93). MIN_REP_FRAMES 가 하한이라면 이건 대칭이 되는 상한이다.
+    #
+    # 3fps 기준 5초. 실제 스쿼트의 바닥 체류는 1초 내외라 5배 여유이고, 홀드 스쿼트 같은
+    # 변형까지 감안해도 넉넉하다. 오판 방향도 안전한 쪽이다 — 크게 잡으면 "덜 걸러짐"이지만
+    # 작게 잡으면 정상 rep 이 사라진다.
+    #
+    # 왜 하강 속도가 아니라 체류 시간인가: 의자에 5초에 걸쳐 앉으면 프레임당 ~5.6° 라
+    # descending 기준(delta <= -4)을 그냥 통과한다. 임계를 더 빡세게 잡으면 이번엔 천천히
+    # 하는 초보자·재활 사용자의 정상 rep 이 걸린다. 두 행동은 속도 축에서 분리되지 않고,
+    # 바닥 체류 시간 축에서만 갈린다(스쿼트 ~1초 vs 앉아쉼 30~90초).
+    MAX_BOTTOM_FRAMES = 15
+
     def __init__(self, exercise_type: str = "squat") -> None:
         self.exercise_type = exercise_type
 
@@ -284,17 +297,27 @@ class StreamingSquatAnalyzer:
                 state.rep_state = "ready"
             elif smooth_knee <= self.BOTTOM_THRESHOLD:
                 state.rep_state = "bottom"
+                state.bottom_entry_frame_index = state.frame_index
         elif state.rep_state == "ready" and smooth_knee <= self.BOTTOM_THRESHOLD:
             state.rep_state = "bottom"
-        elif (
-            state.rep_state == "bottom"
-            and smooth_knee >= self.STANDING_THRESHOLD
-            and state.frame_index - state.last_rep_frame_index >= self.MIN_REP_FRAMES
-        ):
-            state.rep_count += 1
-            state.rep_state = "ready"
-            state.last_rep_frame_index = state.frame_index
-            rep_event = self._summarize_rep(state, raw)
+            state.bottom_entry_frame_index = state.frame_index
+        elif state.rep_state == "bottom" and smooth_knee >= self.STANDING_THRESHOLD:
+            if state.frame_index - state.bottom_entry_frame_index > self.MAX_BOTTOM_FRAMES:
+                # 바닥에 오래 머물렀다 — 운동이 아니라 휴식이었다(이슈 #93).
+                # rep 으로 세지 않되 상태는 되돌린다. 안 그러면 bottom 에 갇혀 다음 진짜
+                # rep 을 놓친다 — "일어섰다"는 사실 자체는 그대로 반영해야 한다.
+                state.rep_state = "ready"
+                # 이 구간의 프레임은 운동이 아니므로 다음 rep 에 섞이면 안 된다. 두면
+                # _summarize_rep 이 휴식 90프레임까지 넣고 DTW 를 돌려 sync_rate 가
+                # 오염된다. (버퍼가 무한정 자라는 문제 자체는 별건 — 이슈 #91)
+                state.current_rep_frames.clear()
+            elif state.frame_index - state.last_rep_frame_index >= self.MIN_REP_FRAMES:
+                state.rep_count += 1
+                state.rep_state = "ready"
+                state.last_rep_frame_index = state.frame_index
+                rep_event = self._summarize_rep(state, raw)
+            # else: MIN_REP_FRAMES 미달 — 원래대로 bottom 을 유지한다. 이 하한은 rep 을
+            # 거부하는 게 아니라 늦추는 장치라, 서 있는 동안 다음 프레임에서 다시 판정된다.
 
         state.previous_smoothed_knee = smooth_knee
         state.frame_index += 1
