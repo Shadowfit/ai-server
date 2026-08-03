@@ -15,7 +15,7 @@
 import unittest
 
 from app.core.squat_analyzer import StreamingSquatAnalyzer
-from app.grpc.session_state import PerRepFrame, SessionState
+from app.grpc.session_state import MAX_REP_FRAMES, PerRepFrame, SessionState
 
 from tests.test_squat_analyzer import _frame
 
@@ -87,6 +87,43 @@ class StreamingRepCountingTests(unittest.TestCase):
     def test_standing_rest_is_not_a_rep(self) -> None:
         sequence = [170.0] * 6 + [168.0] * 90 + [170.0] * 6
         self.assertEqual(_count_reps(sequence), 0)
+
+    def test_idle_frames_do_not_pile_into_next_rep(self) -> None:
+        """이슈 #91 회귀 — 서서 오래 쉬어도 다음 rep 의 배치가 그만큼 부풀지 않는다.
+
+        버퍼는 rep 완성 시에만 비워지므로, 상한이 없으면 서 있던 30초(90프레임)가 다음
+        rep 배치에 통째로 실린다. 그 프레임들은 다음 rep 의 rep_number 를 달고 저장되고
+        sync_rate 계산에도 섞인다.
+
+        `bottom` 체류 상한(#93)은 <b>앉아서</b> 쉬는 경우만 비우므로 이 경로를 못 막는다 —
+        서서 쉬면 `rep_state` 가 `ready` 그대로라 그 정리가 발동하지 않는다.
+        """
+        state = SessionState(session_id=1, exercise_id=1)
+        analyzer = StreamingSquatAnalyzer("squat")
+        idle_frames = 90  # 3fps 기준 30초
+
+        sequence = [170.0] * idle_frames + _ramp(170, 85, 5) + [85.0] + _ramp(85, 170, 5) + _STANDING_TAIL
+        batch_sizes = []
+
+        for knee_angle in sequence:
+            angles, rep_event = analyzer.process_frame(state, _frame(knee_angle))
+            if angles is not None:
+                state.current_rep_frames.append(
+                    PerRepFrame(timestamp_sec=0.0, joint_coordinates="{}", angles=angles)
+                )
+            if rep_event is not None:
+                batch_sizes.append(len(state.current_rep_frames))
+                state.current_rep_frames.clear()
+
+        self.assertEqual(len(batch_sizes), 1, "rep 은 1회 집계돼야 한다")
+        self.assertLessEqual(
+            batch_sizes[0], MAX_REP_FRAMES,
+            f"배치가 상한을 넘었다 — 유휴 프레임 {idle_frames}개가 실려 나갔다",
+        )
+        self.assertLess(
+            batch_sizes[0], idle_frames,
+            "상한이 걸리지 않아 유휴 구간이 그대로 배치에 남았다",
+        )
 
     def test_real_squat_after_sitting_rest_still_counts(self) -> None:
         """휴식을 걸러낸 뒤에도 다음 세트의 첫 rep 을 정상 집계해야 한다.

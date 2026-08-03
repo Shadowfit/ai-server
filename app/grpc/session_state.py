@@ -8,9 +8,22 @@ StopAnalysis 또는 CompleteAnalysis 콜백 직후 제거된다.
 from __future__ import annotations
 
 import threading
+from collections import deque
 from dataclasses import dataclass, field
 
 from app.models.pose import Landmark
+
+# rep 하나에 담길 수 있는 최대 프레임 수 (이슈 #91).
+#
+# rep 은 길어야 몇 초다. 값은 "일어날 수 있는 최대 fps × 넉넉한 rep 길이"로 잡는다 —
+# 현재 클라는 ~3fps(frontend exercise.tsx intervalMs=330)지만 config 의
+# VIDEO_PROCESS_FPS 는 10 이고 실시간 POST 빈도가 코드로 강제돼 있지 않아
+# (ai-load-budget.md §4.1) 위로 열려 있다. 10fps × 6초 = 60.
+#
+# 오판 방향은 안전한 쪽이다. 크게 잡으면 rep 이 아닌 프레임이 조금 섞일 뿐이지만,
+# 작게 잡으면 진짜 rep 의 앞부분이 잘려 대표 프레임 선택(가장 깊게 앉은 순간)이
+# 하강 구간을 못 보게 된다.
+MAX_REP_FRAMES = 60
 
 
 @dataclass
@@ -36,8 +49,20 @@ class SessionState:
     persona: str = "BEGINNER"
     reference_angles: list[list[float]] = field(default_factory=list)
 
-    # 진행 중인 rep에 누적되는 프레임들
-    current_rep_frames: list[PerRepFrame] = field(default_factory=list)
+    # 진행 중인 rep에 누적되는 프레임들.
+    #
+    # 상한을 두는 이유(이슈 #91): 이 버퍼는 rep이 완성될 때만 비워진다. rep 사이에 흘러든
+    # 프레임 — 세트 사이 휴식, 세트 중간에 멈칫하는 순간 — 이 계속 쌓이다가 다음 rep의
+    # 배치에 통째로 실려 나가고, 그 프레임들이 다음 rep의 rep_number를 달고 저장된다.
+    # 상한을 두면 오래된 것부터 밀려나 rep 직전 프레임만 남는다. 그게 실제로 그 rep을
+    # 이루는 프레임이다.
+    #
+    # 클라가 휴식 중 전송을 멈추면(#92) 평상시 유입은 사라지지만, 앱은 '예정된' 휴식만
+    # 알기 때문에 예정 없는 멈춤에는 여전히 프레임이 흐른다. 그래서 이 상한은 #92와
+    # 무관하게 필요하다 — 서버가 클라의 협조에 기대지 않는 하한이다.
+    current_rep_frames: deque[PerRepFrame] = field(
+        default_factory=lambda: deque(maxlen=MAX_REP_FRAMES)
+    )
 
     # 분석기 내부 상태 (StreamingSquatAnalyzer가 관리)
     rep_count: int = 0
