@@ -91,7 +91,8 @@ def test_create_는_여전히_덮어쓴다():
     )
 
     assert state.rep_count == 0
-    assert state.current_rep_frames == []
+    # 상한이 걸린 deque 라 리스트와 직접 비교되지 않는다(이슈 #91) — 비었는지만 본다.
+    assert len(state.current_rep_frames) == 0
 
 
 def test_동시_재부착에서_하나만_생성한다():
