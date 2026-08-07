@@ -35,7 +35,10 @@ def _count_reps(knee_sequence: list[float]) -> int:
     reps = 0
 
     for knee_angle in knee_sequence:
-        angles, rep_event = analyzer.process_frame(state, _frame(knee_angle))
+        # process_frame 은 (angles, smoothed_knee_angle, rep_event) 3-튜플이다. 가운데
+        # 깊이 지표는 이 테스트가 검증하는 대상이 아니라(test_streaming_depth_metric.py 담당)
+        # 버린다 — rep 집계는 이 값에 의존하지 않는다.
+        angles, _, rep_event = analyzer.process_frame(state, _frame(knee_angle))
         if angles is not None:
             state.current_rep_frames.append(
                 PerRepFrame(timestamp_sec=0.0, joint_coordinates="{}", angles=angles)
@@ -106,7 +109,7 @@ class StreamingRepCountingTests(unittest.TestCase):
         batch_sizes = []
 
         for knee_angle in sequence:
-            angles, rep_event = analyzer.process_frame(state, _frame(knee_angle))
+            angles, _, rep_event = analyzer.process_frame(state, _frame(knee_angle))
             if angles is not None:
                 state.current_rep_frames.append(
                     PerRepFrame(timestamp_sec=0.0, joint_coordinates="{}", angles=angles)
