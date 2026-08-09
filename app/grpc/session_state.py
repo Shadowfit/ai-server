@@ -130,6 +130,42 @@ class SessionState:
     accepted_frame_count: int = 0
     dropped_frame_count: int = 0
 
+    # --- 프레임 시각의 기준점 (#156) ---
+    #
+    # timestamp_sec 은 «세션 시작 기준 경과 초» 여야 한다 — 계약서·엔티티 주석·리포트 포맷이
+    # 전부 그렇게 적혀 있다. 그런데 예전에는 클라가 준 Date.now()/1000(epoch)을 그대로 흘려보내
+    # 리포트의 시각 표시가 "29770991:08" 같은 값이 됐다.
+    #
+    # 이제 서버가 만든다. 기준은 **첫 수락 프레임의 도착 시각**(time.monotonic)이고, 클라 시계는
+    # 아예 안 본다 — 벽시계가 아니라 단조시계라 NTP 보정에도 뒤로 가지 않는다.
+    first_frame_mono: float | None = None
+
+    # 재부착 보정. AI 는 상태를 잃고 새로 만들어질 수 있는데, 그러면 위 기준이 «재부착 시점» 이
+    # 되어 경과가 0 부터 다시 시작한다. Spring 이 session.start_time 으로부터의 경과를 실어 보내면
+    # (ReattachRequest.elapsed_sec) 여기에 담아 더한다. initial_rep_count 가 rep 축에서 하는 일을
+    # 시간 축에서 하는 값이다.
+    elapsed_offset_sec: float = 0.0
+
+
+def elapsed_sec(state: SessionState, now: float) -> float:
+    """이 프레임의 «세션 시작 기준 경과 초» (이슈 #156).
+
+    Args:
+        state: 대상 세션. 첫 호출에서 기준점이 여기에 박힌다.
+        now: 프레임 도착 시각 (`time.monotonic()`). 상한 판정이 쓰는 값과 **같은 것**을 넘겨야
+            한다 — 둘이 다른 시점을 보면 «수락한 프레임의 시각» 이 아니게 된다.
+
+    기준을 세션 «생성» 이 아니라 **첫 프레임 도착**으로 잡는 이유: StartAnalysis 와 첫 프레임
+    사이에는 사용자가 자세를 잡는 시간이 있고, 그건 운동 시간이 아니다. 리포트가 표시하는 것은
+    "운동 중 언제" 이므로 첫 프레임이 0 인 편이 읽는 사람의 기대에 맞는다.
+
+    ⚠️ 그래서 재부착 세션의 0 은 «세션 시작» 이 아니라 «재부착 후 첫 프레임» 이다. 그 차이를
+    메우는 것이 `elapsed_offset_sec` 이고, 값은 Spring 이 준다(ReattachRequest.elapsed_sec).
+    """
+    if state.first_frame_mono is None:
+        state.first_frame_mono = now
+    return round(state.elapsed_offset_sec + (now - state.first_frame_mono), 3)
+
 
 def accept_frame(state: SessionState, now: float) -> bool:
     """유입 속도 상한을 넘지 않는 프레임만 True (#143 ㄱ-2).

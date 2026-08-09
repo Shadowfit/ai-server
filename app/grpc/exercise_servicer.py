@@ -192,10 +192,20 @@ class ExerciseServicer(exercise_pb2_grpc.ExerciseServiceServicer):
                 state.rep_count,
             )
         else:
+            # 시간 축 이어붙이기 (이슈 #156). 새로 만든 상태의 프레임 시각은 «첫 프레임 도착» 이
+            # 0 이므로, 그대로 두면 재부착 이후 프레임이 0 초부터 다시 시작해 리포트의 시각이
+            # 뒤로 감는다. rep 축을 initial_rep_count 로 잇는 것과 같은 처리다.
+            #
+            # already_active 면 건드리지 않는다 — 그 세션은 기준점을 이미 갖고 있고, 여기서 덮으면
+            # 중복 호출·재시도만으로 시각이 앞으로 튄다. create_if_absent 가 상태를 보존하는 이유와
+            # 같은 이유다.
+            state.elapsed_offset_sec = max(0.0, request.elapsed_sec)
             logger.info(
-                "세션 %s 재부착 완료 — rep %d 부터 이어서 셈 (분석기 내부 상태는 초기화)",
+                "세션 %s 재부착 완료 — rep %d · 경과 %.1f초 부터 이어서 셈 "
+                "(분석기 내부 상태는 초기화)",
                 session_id,
                 state.rep_count,
+                state.elapsed_offset_sec,
             )
 
         return exercise_pb2.ReattachResponse(

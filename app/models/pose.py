@@ -26,7 +26,13 @@ class PoseRequest(BaseModel):
     )
     timestamp_sec: float | None = Field(
         default=None,
-        description="영상 내 시간(초). 누락 시 서버 측 인덱스로 대체",
+        deprecated=True,
+        description=(
+            "[사용 안 함] 프레임 시각은 서버가 도착 시각으로 만든다 (이슈 #156). "
+            "클라가 보내던 Date.now()/1000 은 epoch 라 «세션 시작 기준 경과 초» 가 아니었고, "
+            "그 값이 변환 없이 리포트까지 흘러 시각 표시가 무의미해졌다. 호환을 위해 필드는 "
+            "남겨두되 읽지 않는다 — 구버전 앱이 계속 보내도 무해하다."
+        ),
     )
 
 

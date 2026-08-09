@@ -21,6 +21,7 @@ from app.grpc.session_state import (
     MIN_FRAME_INTERVAL_SEC,
     PerRepFrame,
     accept_frame,
+    elapsed_sec,
     get_registry,
 )
 from app.models.pose import Landmark, PoseRequest, PoseResponse
@@ -119,11 +120,13 @@ def detect_pose(req: PoseRequest):
             rep_count=state.rep_count,
         )
 
-    timestamp_sec = (
-        req.timestamp_sec if req.timestamp_sec is not None else float(state.frame_index)
-    )
+    # 프레임 시각은 **서버가 만든다** (이슈 #156). 예전에는 두 갈래였고 둘 다 틀렸다:
+    #   req.timestamp_sec       클라의 Date.now()/1000 = epoch. 리포트 시각이 "29770991:08" 이 됐다
+    #   float(state.frame_index) 누락 시 fallback. 개수가 초 자리에 들어가 3fps 면 정확히 3배로
+    #                           «그럴듯하게» 틀렸다 — epoch 보다 오히려 나빴다
+    # 이제 origin 이 하나다. req.timestamp_sec 은 더 읽지 않는다.
     frame = PerRepFrame(
-        timestamp_sec=timestamp_sec,
+        timestamp_sec=elapsed_sec(state, received_at),
         joint_coordinates=_landmarks_to_json(landmarks),
         angles=angles,
         smoothed_knee_angle=smoothed_knee_angle,
