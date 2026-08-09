@@ -12,9 +12,9 @@ import cv2
 from fastapi import APIRouter
 
 import exercise_pb2
+from app.core.analyzer_registry import get_analyzer
 from app.core.angle_calculator import extract_angles
 from app.core.mediapipe_detector import get_detector
-from app.core.squat_analyzer import StreamingSquatAnalyzer
 from app.grpc import spring_client
 from app.grpc.session_state import PerRepFrame, get_registry
 from app.models.pose import Landmark, PoseRequest, PoseResponse
@@ -24,10 +24,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/pose", tags=["포즈 감지"])
 
-# 운동 유형별 분석기 — stateless 클래스라 공유 가능
-_analyzers: dict[str, StreamingSquatAnalyzer] = {
-    "squat": StreamingSquatAnalyzer("squat"),
-}
+# 분석기 레지스트리는 app.core.analyzer_registry 로 옮겼다(이슈 #147). gRPC servicer 도 같은
+# 표를 봐야 하는데, 그게 HTTP 엔드포인트 모듈에 있으면 참조 방향이 거꾸로가 된다.
 
 
 def _landmarks_to_json(landmarks: list[Landmark]) -> str:
@@ -68,7 +66,7 @@ def detect_pose(req: PoseRequest):
             message=f"세션 {req.session_id}가 시작되지 않았습니다 (StartAnalysis 먼저 호출 필요)",
         )
 
-    analyzer = _analyzers.get(state.exercise_type)
+    analyzer = get_analyzer(state.exercise_type)
     if analyzer is None:
         return PoseResponse(
             success=False, message=f"미지원 운동: {state.exercise_type}"

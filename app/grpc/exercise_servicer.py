@@ -18,6 +18,7 @@ from google.protobuf.timestamp_pb2 import Timestamp
 
 import exercise_pb2
 import exercise_pb2_grpc
+from app.core.analyzer_registry import resolve_exercise_type, supported_exercise_ids
 from app.core.angle_calculator import extract_angles
 from app.grpc import spring_client
 from app.grpc.correlation import wrap as correlation_wrap
@@ -69,8 +70,28 @@ class ExerciseServicer(exercise_pb2_grpc.ExerciseServiceServicer):
             len(request.reference_poses),
         )
 
-        # 일단 squat으로 가정. 추후 exercise_id → exercise_type 매핑이 필요.
-        exercise_type = "squat"
+        # exercise_id → 분석기. 여기 없으면 이 종목은 분석할 수 없다(이슈 #147).
+        #
+        # 예전에는 exercise_type = "squat" 이 못박혀 있었다. 그러면 런지로 세션을 시작해도
+        # 스쿼트 분석기가 돌아 **조용히 틀린 점수**가 나온다 — rep 카운팅이 무릎 각도를
+        # 하드코딩해 세기 때문이다(squat_analyzer._extract_raw_metrics).
+        exercise_type = resolve_exercise_type(exercise_id)
+        if exercise_type is None:
+            # abort 인 이유: Spring 의 onNext 는 success 필드를 보지 않고 세션 id 만 로깅한다
+            # (ExerciseAnalysisService.java:244-247). 즉 success=False 로 거절하면 그대로
+            # 삼켜져 세션이 IN_PROGRESS 로 남는다 — «명시적 실패» 라는 이 변경의 목적이
+            # 무너진다. onError 경로는 markAsFailedIfStillInProgress 로 세션을 닫아준다.
+            logger.error(
+                "[Spring → AI] StartAnalysis 거절 — 분석기 없음 (session=%s, exercise=%s, 지원=%s)",
+                session_id,
+                exercise_id,
+                supported_exercise_ids(),
+            )
+            context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                f"분석기가 없는 운동입니다 (exercise_id={exercise_id})",
+            )
+
         reference_angles = _parse_reference_poses(
             request.reference_poses, exercise_type
         )
@@ -122,8 +143,26 @@ class ExerciseServicer(exercise_pb2_grpc.ExerciseServiceServicer):
             request.initial_rep_count,
         )
 
-        # StartAnalysis 와 동일 — exercise_id → exercise_type 매핑은 아직 없다(squat-first).
-        exercise_type = "squat"
+        # StartAnalysis 와 같은 판정이지만 **거절 방식이 다르다**(이슈 #147).
+        #
+        # 여기는 abort 가 아니라 success=False 다. 재부착은 Spring 이 응답을 실제로 읽고
+        # W009(SESSION_REATTACH_UNAVAILABLE) 로 옮기는 경로가 이미 있어서다 — 바로 아래
+        # «기준 좌표 복원 실패» 분기와 같은 형태다. StartAnalysis 쪽은 Spring 이 success 를
+        # 안 읽어서 abort 가 아니면 삼켜진다.
+        exercise_type = resolve_exercise_type(request.exercise_id)
+        if exercise_type is None:
+            logger.error(
+                "세션 %s 재부착 실패 — 분석기 없음 (exercise=%s, 지원=%s)",
+                session_id,
+                request.exercise_id,
+                supported_exercise_ids(),
+            )
+            return exercise_pb2.ReattachResponse(
+                success=False,
+                session_id=session_id,
+                message="분석기가 없는 운동입니다.",
+            )
+
         reference_angles = _parse_reference_poses(request.reference_poses, exercise_type)
 
         if not reference_angles:
