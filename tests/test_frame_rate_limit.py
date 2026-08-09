@@ -16,16 +16,25 @@ fps 가 코드로 고정돼 있지 않다. 이슈 코멘트의 측정이 결과�
 `test_hold_boundary_is_no_longer_fps_dependent` 가 그 잔차를 수치로 고정한다.
 """
 import unittest
+from unittest import mock
 
+import numpy as np
+
+from app.api.endpoints import pose as pose_endpoint
 from app.core.squat_analyzer import StreamingSquatAnalyzer
 from app.grpc.session_state import (
     MIN_FRAME_INTERVAL_SEC,
     PerRepFrame,
     SessionState,
     accept_frame,
+    get_registry,
 )
+from app.models.pose import PoseRequest
 
 from tests.test_squat_analyzer import _frame
+
+# cv2.cvtColor 가 실제로 도는 최소 크기. 디코딩만 가짜로 대체하고 변환은 그대로 태운다.
+_BLANK_IMAGE = np.zeros((4, 4, 3), dtype=np.uint8)
 
 # #143 코멘트가 쓴 «시간으로 정의한 스쿼트 1회». fps 는 이 궤적을 샘플링하는 간격일 뿐이고,
 # 사람의 동작 자체는 fps 와 무관하게 같다 — 그게 이 재현의 핵심이다.
@@ -100,17 +109,37 @@ class FrameRateLimitReproductionTests(unittest.TestCase):
     HOLD_CASES = (0.5, 1.0, 1.5, 2.0, 3.0)
 
     def test_without_limiter_reproduces_the_defect(self) -> None:
-        """상한이 없으면 10·30fps 에서 rep 이 사라진다 — 이 테스트가 헛돌지 않는다는 증거."""
-        vanished = [
-            (fps, hold)
-            for fps in (10.0, 30.0)
-            for hold in self.HOLD_CASES
-            if _count_reps(fps, hold, limiter=False) == 0
+        """상한이 없으면 높은 fps 에서 rep 이 사라진다 — 이 테스트가 헛돌지 않는다는 증거.
+
+        ⚠️ **기준선이 한 번 바뀌었다.** 처음 이 검사를 넣었을 때는 10·30fps × 체류 5종 = 10 조합이
+        전부 사라졌다. #159(체류를 «밴드 통과 + 체류» 가 아니라 실제 100° 아래 프레임으로 계량)를
+        고친 뒤로는 **8 조합**이다 — 10fps · 체류 0.5s·1.0s 는 상한이 없어도 살아남는다.
+
+        두 결함이 같은 예산을 놓고 겹쳐 있었기 때문이다. #159 가 예산에서 밴드 통과 시간을 빼면서
+        fps 상승에 대한 여유도 같이 늘었다. **#143 이 사라진 것은 아니다** — 30fps 는 여전히 전부
+        사라지고, 그것이 상한이 필요한 이유다.
+
+        그래서 «10 조합 전부» 를 고정하지 않는다. 30fps 행만 전부 사라지는 것으로 고정하고,
+        10fps 행은 #159 같은 인접 수정이 들어올 때마다 깨지지 않게 하한만 둔다.
+        """
+        vanished_30 = [
+            hold for hold in self.HOLD_CASES if _count_reps(30.0, hold, limiter=False) == 0
         ]
         self.assertEqual(
-            len(vanished),
-            len(self.HOLD_CASES) * 2,
-            f"#143 재현이 안 됐다 — 상한 없이도 살아남은 조합이 있다: {vanished}",
+            len(vanished_30),
+            len(self.HOLD_CASES),
+            f"30fps 에서 #143 재현이 안 됐다 — 상한 없이 살아남은 체류: "
+            f"{set(self.HOLD_CASES) - set(vanished_30)}",
+        )
+
+        vanished_10 = [
+            hold for hold in self.HOLD_CASES if _count_reps(10.0, hold, limiter=False) == 0
+        ]
+        self.assertGreaterEqual(
+            len(vanished_10),
+            1,
+            "10fps 에서도 상한 없이 사라지는 조합이 하나는 있어야 한다 "
+            f"(현재 사라지는 체류: {vanished_10})",
         )
 
     def test_limiter_restores_reps_at_every_fps(self) -> None:
@@ -273,6 +302,60 @@ class HoldBoundaryTests(unittest.TestCase):
         spread = max(boundaries.values()) - min(boundaries.values())
         self.assertLessEqual(
             spread, 1.0, f"fps 별 체류 임계가 여전히 {spread}s 벌어진다: {boundaries}"
+        )
+
+
+class HandlerArrivalTimeTests(unittest.TestCase):
+    """상한이 «도착 간격» 을 재는가 — 위 테스트들이 못 잡는 자리다.
+
+    위 테스트는 전부 `accept_frame(state, now)` 을 직접 부르며 시각을 주입한다. 그래서 «핸들러가
+    그 now 로 무엇을 넘기는가» 는 한 번도 안 탄다. 최초 구현은 `time.monotonic()` 을 디코딩과
+    MediaPipe 추론 **뒤** 에서 찍고 있었고, 그러면 상한이 재는 것은 전송 간격이 아니라 완료
+    간격이다 — 프레임당 처리가 300ms 를 넘는 기기에서는 모든 프레임이 수락되어 상한이 무력해진다.
+    """
+
+    def test_limiter_reads_the_clock_before_inference(self) -> None:
+        """추론이 상한보다 오래 걸려도, 규약보다 빠른 도착은 드롭된다."""
+        clock = {"t": 0.0}
+        seen: list[float] = []
+
+        def fake_monotonic() -> float:
+            return clock["t"]
+
+        def fake_detect(_image):
+            # 추론이 상한(300ms)보다 오래 걸리는 기기. 이것이 완료 시각을 앞으로 밀어낸다.
+            clock["t"] += 0.5
+            return _frame(_STANDING_ANGLE)
+
+        real_accept = pose_endpoint.accept_frame
+
+        def spy_accept(state, now):
+            seen.append(now)
+            return real_accept(state, now)
+
+        get_registry().create(session_id=9101, exercise_id=1, reference_angles=[])
+        self.addCleanup(get_registry().remove, 9101)
+
+        req = PoseRequest(image="", session_id=9101, exercise_type="squat")
+
+        with mock.patch.object(pose_endpoint.time, "monotonic", fake_monotonic), \
+            mock.patch.object(pose_endpoint, "accept_frame", spy_accept), \
+            mock.patch.object(pose_endpoint, "base64_to_image", lambda _: _BLANK_IMAGE), \
+            mock.patch.object(pose_endpoint, "get_detector", lambda: mock.Mock(detect=fake_detect)):
+            clock["t"] = 0.00  # 1번째 프레임 도착
+            pose_endpoint.detect_pose(req)
+            clock["t"] = 0.10  # 2번째 프레임 도착 — 규약(330ms)보다 빠르다
+            second = pose_endpoint.detect_pose(req)
+
+        self.assertEqual(
+            seen,
+            [0.00, 0.10],
+            f"상한이 받은 시각이 도착 시각이 아니다: {seen} — 추론 뒤에서 찍고 있다",
+        )
+        self.assertEqual(
+            second.message,
+            "유입 속도 상한 초과 — 분석 스킵",
+            "추론이 0.5초 걸리는 동안 100ms 간격 프레임이 수락됐다 — 상한이 무력하다",
         )
 
 

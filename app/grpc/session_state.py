@@ -102,9 +102,14 @@ class SessionState:
     rep_count: int = 0
     rep_state: str = "waiting_for_standing"
     last_rep_frame_index: int = -10_000
-    # bottom 상태에 진입한 프레임. rep 완성 시 "바닥에 얼마나 머물렀나"를 재는 데 쓴다 —
-    # 앉아서 쉬는 것과 스쿼트를 가르는 축이다 (이슈 #93).
-    bottom_entry_frame_index: int = 0
+    # bottom 구간에서 **실제로 100° 아래에 있던** 프레임 수. 앉아서 쉬는 것과 스쿼트를 가르는
+    # 축이다 (이슈 #93).
+    #
+    # 진입 프레임 인덱스가 아니라 카운터인 이유(이슈 #159): 진입~이탈 프레임 차이로 재면 이탈
+    # 임계가 150° 라서 **상승 중 100~150° 구간이 통째로 「바닥 체류」에 포함된다.** 그러면 하강이
+    # 느린 사용자일수록 체류 예산이 줄어, 속도를 안 보려고 만든 상수가 속도에 의존하게 된다.
+    # 측정: 3fps·체류 0.5초 고정에서 하강 5.1초부터 정상 rep 이 사라졌다.
+    bottom_frame_count: int = 0
     frame_index: int = 0
     previous_smoothed_knee: float | None = None
     recent_raw_knees: list[float] = field(default_factory=list)

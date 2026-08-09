@@ -277,6 +277,12 @@ class StreamingSquatAnalyzer:
     # descending 기준(delta <= -4)을 그냥 통과한다. 임계를 더 빡세게 잡으면 이번엔 천천히
     # 하는 초보자·재활 사용자의 정상 rep 이 걸린다. 두 행동은 속도 축에서 분리되지 않고,
     # 바닥 체류 시간 축에서만 갈린다(스쿼트 ~1초 vs 앉아쉼 30~90초).
+    #
+    # ⚠️ 무엇을 세는지가 바뀌었다 (이슈 #159). 예전에는 bottom **진입~이탈 프레임 차이**를
+    #    이 값과 비교했는데, 이탈 임계가 150° 라서 상승 중 100~150° 구간이 통째로 「체류」에
+    #    포함됐다. 그 결과 위 주석이 지키려던 바로 그 사용자 — 천천히 하는 초보자·재활 —
+    #    가 걸렸다. 지금은 `state.bottom_frame_count`, 즉 **실제로 100° 아래에 있던 프레임 수**
+    #    를 센다. 값 15 는 그대로다(새 임계를 만들지 않으려고 기존 BOTTOM_THRESHOLD 를 재사용).
     MAX_BOTTOM_FRAMES = 15
 
     def __init__(self, exercise_type: str = "squat") -> None:
@@ -315,17 +321,23 @@ class StreamingSquatAnalyzer:
 
         rep_event: StreamingRepEvent | None = None
 
+        # 체류 계량 (이슈 #159). 전이 판정보다 **먼저** 온다 — 진입 프레임은 아직 이 블록에
+        # 도달하기 전에 상태가 바뀌므로 세지 않고, 이탈 프레임은 이미 150° 위라 조건에 안 걸린다.
+        # 즉 여기서 세는 것은 «bottom 상태로 지낸 프레임 중 실제로 100° 아래였던 것» 뿐이다.
+        if state.rep_state == "bottom" and smooth_knee <= self.BOTTOM_THRESHOLD:
+            state.bottom_frame_count += 1
+
         if state.rep_state == "waiting_for_standing":
             if smooth_knee >= self.STANDING_THRESHOLD:
                 state.rep_state = "ready"
             elif smooth_knee <= self.BOTTOM_THRESHOLD:
                 state.rep_state = "bottom"
-                state.bottom_entry_frame_index = state.frame_index
+                state.bottom_frame_count = 0
         elif state.rep_state == "ready" and smooth_knee <= self.BOTTOM_THRESHOLD:
             state.rep_state = "bottom"
-            state.bottom_entry_frame_index = state.frame_index
+            state.bottom_frame_count = 0
         elif state.rep_state == "bottom" and smooth_knee >= self.STANDING_THRESHOLD:
-            if state.frame_index - state.bottom_entry_frame_index > self.MAX_BOTTOM_FRAMES:
+            if state.bottom_frame_count > self.MAX_BOTTOM_FRAMES:
                 # 바닥에 오래 머물렀다 — 운동이 아니라 휴식이었다(이슈 #93).
                 # rep 으로 세지 않되 상태는 되돌린다. 안 그러면 bottom 에 갇혀 다음 진짜
                 # rep 을 놓친다 — "일어섰다"는 사실 자체는 그대로 반영해야 한다.
