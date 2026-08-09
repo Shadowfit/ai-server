@@ -1,8 +1,18 @@
 """Bearer-token 인증 미들웨어.
 
 분기 H2 (프론트 → AI 직결) 채택으로 `POST /pose` 가 외부 노출되므로
-모든 인입 HTTP 요청에 `Authorization: Bearer <INTERNAL_API_TOKEN>` 헤더를 강제한다.
-gRPC 측 `AuthInterceptor` (app/grpc/auth_interceptor.py) 와 같은 토큰을 검증한다.
+모든 인입 HTTP 요청에 `Authorization: Bearer <AI_PUBLIC_TOKEN>` 헤더를 강제한다.
+
+⚠️ **gRPC 와 다른 토큰을 검증한다** (2026-08-09, 이슈 #134 / decisions/ai-auth-token-flow.md ㄱ).
+예전엔 gRPC 측 `AuthInterceptor` 와 **같은 값**(`INTERNAL_API_TOKEN`)을 봤는데, 그 값이
+프론트 번들(`EXPO_PUBLIC_`)에 인라인돼 배포되므로 앱에서 추출한 토큰으로 Spring 내부
+gRPC(`SavePoseDataBatch` 등)까지 칠 수 있었다. 값을 나눠 그 횡단을 끊는다.
+
+- `AI_PUBLIC_TOKEN`  → 이 미들웨어(HTTP). **클라이언트에 배포되는 값**
+- `INTERNAL_API_TOKEN` → gRPC 인터셉터 + Spring 콜백. **서버 밖으로 나가지 않는 값**
+
+미설정이면 모든 요청이 401 이다(fail-closed). 프론트는 토큰이 없으면 폴링 자체를
+시작하지 않는다(`exercise.tsx`).
 """
 
 from __future__ import annotations
@@ -38,7 +48,7 @@ class InternalAuthMiddleware(BaseHTTPMiddleware):
             )
 
         token = auth_header[len("Bearer ") :]
-        if not settings.INTERNAL_API_TOKEN or token != settings.INTERNAL_API_TOKEN:
+        if not settings.AI_PUBLIC_TOKEN or token != settings.AI_PUBLIC_TOKEN:
             return JSONResponse(
                 status_code=401, content={"detail": "Invalid token"}
             )

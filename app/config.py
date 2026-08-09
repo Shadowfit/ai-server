@@ -24,8 +24,20 @@ class Settings(BaseSettings):
     # Spring Boot 백엔드 URL (전처리 결과 저장용)
     BACKEND_URL: str = "http://localhost:8080/api/v1"
 
-    # 내부 서비스 간 공유 비밀키 (Spring과 동일한 값이어야 함)
+    # 내부 서비스 간 공유 비밀키 (Spring과 동일한 값이어야 함).
+    # ⚠️ 이 값은 **서버 밖으로 나가지 않는다** — gRPC 양방향(Spring→AI 인터셉터,
+    # AI→Spring 콜백)에만 쓴다. 클라이언트에 배포하면 안 된다 (이슈 #134).
     INTERNAL_API_TOKEN: str = ""
+
+    # 프론트 → AI HTTP 직결(분기 H2) 전용 토큰. 앱 번들에 배포되는 값이다.
+    #
+    # INTERNAL_API_TOKEN 과 **값을 분리한 이유**(이슈 #134, decisions/ai-auth-token-flow.md ㄱ):
+    # 예전엔 둘이 같은 값이라, 앱 번들에서 추출한 토큰으로 Spring 내부 gRPC(SavePoseDataBatch
+    # 등 4개 RPC)까지 칠 수 있었다. 값을 나누면 유출 피해가 AI HTTP 로 한정된다.
+    #
+    # ⚠️ 이 토큰도 여전히 번들에 들어간다 — "누구나 /pose 를 호출할 수 있다" 는 그대로다.
+    # 호출자 신원을 만드는 것은 별도 안(I2 세션 단기 토큰)이고 미결정이다.
+    AI_PUBLIC_TOKEN: str = ""
 
     # Spring gRPC 서버 주소 (콜백 대상)
     BACKEND_GRPC_ADDRESS: str = "shadowfit-backend:6565"

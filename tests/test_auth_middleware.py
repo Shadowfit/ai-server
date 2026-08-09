@@ -14,11 +14,16 @@ from fastapi.testclient import TestClient
 from app.config import settings
 from app.middleware.auth import InternalAuthMiddleware
 
-VALID_TOKEN = "test-internal-token"
+VALID_TOKEN = "test-ai-public-token"
+
+# HTTP 미들웨어가 **거부해야 하는** 값 — gRPC 내부 토큰이다(이슈 #134).
+# 둘이 같은 값이던 시절엔 이걸로도 통과했다. test_internal_token_is_rejected 가 그 회귀를 막는다.
+INTERNAL_TOKEN = "test-internal-grpc-token"
 
 
 def _make_client() -> TestClient:
-    settings.INTERNAL_API_TOKEN = VALID_TOKEN
+    settings.AI_PUBLIC_TOKEN = VALID_TOKEN
+    settings.INTERNAL_API_TOKEN = INTERNAL_TOKEN
 
     app = FastAPI()
     app.add_middleware(
@@ -92,8 +97,8 @@ def test_cors_preflight_bypasses_auth():
 
 
 def test_empty_configured_token_does_not_accept_empty_bearer():
-    """INTERNAL_API_TOKEN 미설정(빈 문자열) 상태에서 빈 Bearer 헤더로 통과하면 안 됨."""
-    settings.INTERNAL_API_TOKEN = ""
+    """AI_PUBLIC_TOKEN 미설정(빈 문자열) 상태에서 빈 Bearer 헤더로 통과하면 안 됨."""
+    settings.AI_PUBLIC_TOKEN = ""
 
     app = FastAPI()
     app.add_middleware(InternalAuthMiddleware)
@@ -107,4 +112,22 @@ def test_empty_configured_token_does_not_accept_empty_bearer():
         res = client.post("/pose", headers={"Authorization": "Bearer "})
         assert res.status_code == 401
     finally:
-        settings.INTERNAL_API_TOKEN = VALID_TOKEN
+        settings.AI_PUBLIC_TOKEN = VALID_TOKEN
+
+
+def test_internal_token_is_rejected():
+    """gRPC 내부 토큰으로는 HTTP 를 통과할 수 없다 — 이슈 #134 회귀 방지.
+
+    이 테스트가 잠그는 것은 «값이 다르다» 가 아니라 **«HTTP 경로가 내부 토큰을 보지
+    않는다»** 는 계약이다. 미들웨어가 다시 INTERNAL_API_TOKEN 을 참조하게 되면
+    (또는 둘 중 하나로 fallback 하게 되면) 여기서 깨진다.
+
+    깨졌을 때의 의미: 앱 번들에서 추출한 토큰으로 Spring 내부 gRPC 까지 칠 수 있게
+    된다 — decisions/ai-auth-token-flow.md §2②.
+    """
+    client = _make_client()
+
+    res = client.post("/pose", headers={"Authorization": f"Bearer {INTERNAL_TOKEN}"})
+
+    assert res.status_code == 401
+    assert res.json()["detail"] == "Invalid token"
