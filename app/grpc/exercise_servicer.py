@@ -219,6 +219,19 @@ class ExerciseServicer(exercise_pb2_grpc.ExerciseServiceServicer):
                 session_id=session_id,
             )
 
+        # 유입 속도 상한의 관측 지점 (#143 ㄱ-2). AI 쪽에는 메트릭 익스포터가 없어서(#151)
+        # 지금은 세션 종료 로그가 유일한 창구다. 드롭이 0 이 아니면 «클라가 규약보다 빨리
+        # 보내고 있다» 는 뜻이고, 그건 판정 상수 4/15/60 을 재검증할 근거가 된다.
+        total_frames = state.accepted_frame_count + state.dropped_frame_count
+        if total_frames:
+            logger.info(
+                "[#143] 프레임 수락/드롭 (session=%s): 수락 %d · 드롭 %d (%.1f%%)",
+                session_id,
+                state.accepted_frame_count,
+                state.dropped_frame_count,
+                state.dropped_frame_count * 100.0 / total_frames,
+            )
+
         # 누적된 rep들로 최종 통계 산출 → 별도 스레드에서 Spring 콜백.
         # correlation_wrap 필수 — 새 스레드는 이 핸들러의 ContextVar 를 상속하지 않아서,
         # 감싸지 않으면 CompleteAnalysis 콜백이 자기를 촉발한 StopAnalysis 와 안 이어진다.

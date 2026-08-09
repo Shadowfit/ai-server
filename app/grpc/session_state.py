@@ -25,6 +25,27 @@ from app.models.pose import Landmark
 # 하강 구간을 못 보게 된다.
 MAX_REP_FRAMES = 60
 
+# 실시간 프레임 «수락» 상한 (이슈 #143 · ㄱ-2 안).
+#
+# 왜 필요한가: rep 판정 상수 3개(MIN_REP_FRAMES 4 · MAX_BOTTOM_FRAMES 15 · MAX_REP_FRAMES 60)가
+# 전부 «프레임 개수» 로 시간을 인코딩하는데, 개수를 초로 되돌리는 fps 가 코드로 고정돼 있지
+# 않다. 클라가 빨라지면 세 상수의 실효 시간이 전부 짧아지고, 오판 방향이 안전하지 않다 —
+# #143 측정: 10fps 에서 바닥 체류 0.5초짜리 «정상» 스쿼트가 rep 0 으로 사라진다
+# (3fps 에서는 체류 4.3초까지 버틴다).
+#
+# 값의 근거: 상수 4/15/60 이 검증된 유일한 지점이 현재 클라의 3fps 다
+# (frontend exercise.tsx 의 intervalMs=330). 새 약속을 만들지 않으려고 그 지점을 상한으로 쓴다.
+#
+# 왜 330 이 아니라 300 인가: 330 으로 두면 클라 간격과 «같아져» 경계값이 된다. 스케줄러·네트워크
+# 지터로 개별 도착 간격이 330 을 밑돌 때마다 규약을 지키는 클라의 프레임이 버려진다. 한 칸 아래인
+# 300ms(3.33fps)에서 bottom 예산은 15/3.33 = 4.5초로 3fps(5.0초) 대비 0.5초만 줄고, 측정된
+# «bottom 구간 ≈ 체류 + 1.1초» 기준으로 체류 3.4초까지 허용한다 — 주석이 근거로 든 실제 체류
+# ~1초의 3배다.
+#
+# ⚠️ 이 상한은 «지금 도는 값을 보존» 하는 것이지 3fps 가 옳다는 근거가 아니다. 세 상수의 값
+#    자체는 여전히 미검증이고(#143 §5-3), fps 를 올리려면 그 재검증이 선행한다.
+MIN_FRAME_INTERVAL_SEC = 0.300
+
 
 @dataclass
 class PerRepFrame:
@@ -90,6 +111,53 @@ class SessionState:
 
     # 완료된 rep 요약 (StopAnalysis 시 평균 계산용)
     completed_reps: list[CompletedRep] = field(default_factory=list)
+
+    # --- 유입 속도 상한 (#143 ㄱ-2) ---
+    #
+    # 다음 프레임을 받을 수 있는 가장 이른 시각 (time.monotonic 기준). None 이면 아직 한 장도
+    # 안 받았다는 뜻이다. 벽시계가 아니라 monotonic 인 것은 의도적이다 — 이 판정의 신뢰 경계를
+    # 서버 안에서 닫는 것이 ㄱ-2 를 고른 이유이고, 벽시계는 NTP 보정으로 뒤로 갈 수 있다.
+    next_frame_deadline: float | None = None
+
+    # 드롭률 관측 (#143 · #151). AI 쪽에는 메트릭 익스포터가 아예 없어서(#151) 우선 카운터 +
+    # 세션 종료 로그로 시작한다. 이 값이 있어야 «클라가 빨라졌다» 는 사실 자체를 알아챌 수 있다 —
+    # 없으면 드롭은 조용하고, 그건 상한을 안 건 것과 관측 면에서 같다.
+    accepted_frame_count: int = 0
+    dropped_frame_count: int = 0
+
+
+def accept_frame(state: SessionState, now: float) -> bool:
+    """유입 속도 상한을 넘지 않는 프레임만 True (#143 ㄱ-2).
+
+    Args:
+        state: 대상 세션. 수락/드롭 카운터와 데드라인이 여기서 갱신된다.
+        now: `time.monotonic()` 값. 테스트가 시간을 주입할 수 있게 인자로 받는다.
+
+    데드라인을 **«직전 데드라인 + 간격»** 으로 밀고 «수락 시각 + 간격» 으로 밀지 않는 이유:
+    후자는 지터를 누적한다. 늦게 도착한 프레임이 기준을 그만큼 뒤로 밀고, 다음 프레임은 그
+    밀린 기준과 비교되므로, **평균적으로 규약을 지키는 클라도 프레임의 1/3 가량을 잃는다.**
+    전자는 장기 평균만 제한하므로 지터가 그대로 통과한다.
+
+    대신 «밀린 크레딧» 을 버리는 처리가 따라온다 — 클라가 상한보다 느리게 보내는 동안 데드라인이
+    현재 시각보다 뒤처지면 그 차이가 곧 크레딧이 되고, 그대로 두면 클라가 쉬었다 재개하는 순간
+    쌓인 만큼이 한꺼번에 통과한다. 그게 정확히 이 상한이 막으려던 상황이다.
+    """
+    deadline = state.next_frame_deadline
+
+    if deadline is not None and now < deadline:
+        state.dropped_frame_count += 1
+        return False
+
+    if deadline is None:
+        next_deadline = now + MIN_FRAME_INTERVAL_SEC
+    else:
+        next_deadline = deadline + MIN_FRAME_INTERVAL_SEC
+        if next_deadline < now:
+            next_deadline = now + MIN_FRAME_INTERVAL_SEC
+
+    state.next_frame_deadline = next_deadline
+    state.accepted_frame_count += 1
+    return True
 
 
 class SessionStateRegistry:
