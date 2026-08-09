@@ -81,6 +81,34 @@ class ReattachContinuityTests(unittest.TestCase):
         values = [elapsed_sec(state, 100.0 + k) for k in range(4)]
         self.assertEqual(values, [60.0, 61.0, 62.0, 63.0])
 
+    def test_preparation_delay_does_not_leak_into_the_offset(self) -> None:
+        """자세 잡는 시간이 재부착 뒤에 다시 끼어들지 않는다 — origin 이 하나라는 뜻이다.
+
+        초판은 Spring 이 `session.start_time` 기준 경과를 보냈다. 그 원점에는 StartAnalysis 와
+        첫 프레임 사이의 준비 시간이 들어 있는데, AI 의 원점에는 그게 빠져 있다. 두 원점을 섞으면
+        재부착 이후 시각이 준비 시간만큼 통째로 앞선다.
+
+        지금은 Spring 이 MAX(pose_data.timestamp_sec) 를 보낸다 — 저장된 값 자체가 AI 원점으로
+        만들어진 것이라 준비 시간이 애초에 안 들어 있다. 아래는 그 계약을 AI 쪽에서 고정한다.
+        """
+        prep = 20.0  # 세션 생성 → 첫 프레임까지 자세 잡는 시간
+
+        # 1차 세션: 첫 프레임이 prep 만큼 늦게 도착해도 0 에서 시작한다
+        first = SessionState(session_id=1, exercise_id=1)
+        self.assertEqual(elapsed_sec(first, 1_000.0 + prep), 0.0)
+        last_recorded = elapsed_sec(first, 1_000.0 + prep + 60.0)
+        self.assertEqual(last_recorded, 60.0)
+
+        # 재부착: Spring 이 저장된 마지막 값(=60.0)을 그대로 준다. 준비 시간이 섞이지 않는다.
+        second = SessionState(session_id=1, exercise_id=1)
+        second.elapsed_offset_sec = last_recorded
+
+        self.assertEqual(elapsed_sec(second, 9_000.0), 60.0)
+        self.assertEqual(elapsed_sec(second, 9_010.0), 70.0)
+
+        # start_time 기준이었다면 여기서 80.0(= 60 + prep)이 나와 20초가 부풀려진다.
+        self.assertNotEqual(elapsed_sec(second, 9_010.0), last_recorded + prep)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -88,10 +88,7 @@ message ReattachRequest {
   // pose_data 의 MAX(rep_number). AI 는 여기서부터 이어서 센다.
   // 이 값이 없으면 재부착 후 total_reps 가 재부착 이후분만 집계된다(CompleteAnalysis 가 AI 값을 그대로 쓰므로).
   int32 initial_rep_count = 5;
-  // 세션 시작(session.start_time)부터 재부착 시점까지 이미 흐른 초 (이슈 #156).
-  // AI 는 프레임 시각을 «자기 단조시계 기준 경과» 로 만드는데, 재부착하면 그 기준이 재부착
-  // 시점으로 리셋된다. 이 값이 없으면 재부착 이후 프레임의 timestamp_sec 이 0 부터 다시 시작해
-  // 리포트의 시각 표시가 뒤로 감는다. initial_rep_count 가 rep 축에서 하는 일을 시간 축에서 한다.
+  // 이 세션에서 이미 흐른 초 = MAX(pose_data.timestamp_sec) (이슈 #156).\n  // AI 는 프레임 시각을 «첫 프레임 도착 기준 경과» 로 만드는데, 재부착하면 그 기준이 재부착\n  // 시점으로 리셋된다. 이 값이 없으면 재부착 이후 프레임의 timestamp_sec 이 0 부터 다시 시작해\n  // 리포트의 시각 표시가 뒤로 감는다. initial_rep_count 가 rep 축에서 하는 일을 시간 축에서 한다.\n  //\n  // ⚠️ session.start_time 기준 경과가 **아니다.** 그건 원점이 «세션 생성» 이라 AI 가 의도적으로\n  // 뺀 «자세 잡는 시간» 이 다시 들어간다. 두 축이 같은 데이터원(pose_data)에서 나와야 원점이 하나다.
   double elapsed_sec = 6;
 }
 
