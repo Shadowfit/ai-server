@@ -15,7 +15,7 @@ from fastapi import APIRouter
 import exercise_pb2
 from app.core.analyzer_registry import get_analyzer
 from app.core.angle_calculator import extract_angles
-from app.core.mediapipe_detector import get_detector
+from app.core.mediapipe_detector import get_detector, lease_detector
 from app.grpc import spring_client
 from app.grpc.session_state import (
     MIN_FRAME_INTERVAL_SEC,
@@ -61,8 +61,20 @@ def detect_pose(req: PoseRequest):
     image_bgr = base64_to_image(req.image)
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
 
-    detector = get_detector()
-    landmarks = detector.detect(image_rgb)
+    # 세션이 있으면 «그 세션 전용» 검출기를 쓴다(#164). 스레드 로컬이면 요청이 아무 스레드나
+    # 집어가면서 직전에 본 다른 세션 때문에 트래킹이 깨진다 — 실사용 3fps 에서 검출률 손실
+    # 41~63%p (loadtest/results/thread-collision-2026-08-11/).
+    # with 블록은 세션 락이다. 클라 백프레셔가 없어 같은 세션 프레임이 겹칠 수 있는데,
+    # 겹쳐서 같은 PoseDetector 를 동시에 부르면 지금보다 나쁘다.
+    lease = lease_detector(req.session_id)
+    if lease is None:
+        # 풀에 자리가 없다 = 세션이 시작되지 않았거나 상한에 걸렸다.
+        return PoseResponse(
+            success=False,
+            message=f"세션 {req.session_id}에 배정된 분석기가 없습니다 (StartAnalysis 먼저 호출 필요)",
+        )
+    with lease as detector:
+        landmarks = detector.detect(image_rgb)
 
     if not landmarks:
         return PoseResponse(success=False, message="포즈를 감지할 수 없습니다")

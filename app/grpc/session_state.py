@@ -8,6 +8,7 @@ StopAnalysis 또는 CompleteAnalysis 콜백 직후 제거된다.
 from __future__ import annotations
 
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -15,14 +16,26 @@ from app.models.pose import Landmark
 
 # rep 하나에 담길 수 있는 최대 프레임 수 (이슈 #91).
 #
-# rep 은 길어야 몇 초다. 값은 "일어날 수 있는 최대 fps × 넉넉한 rep 길이"로 잡는다 —
-# 현재 클라는 ~3fps(frontend exercise.tsx intervalMs=330)지만 config 의
-# VIDEO_PROCESS_FPS 는 10 이고 실시간 POST 빈도가 코드로 강제돼 있지 않아
-# (ai-load-budget.md §4.1) 위로 열려 있다. 10fps × 6초 = 60.
+# 🔴 이 값은 시간 상수가 아니다 — 제약 두 개를 혼자 진다 (이슈 #160).
+#
+#   상한 방향: 세션당 메모리를 막아야 하니 **작아야** 한다 (#91 이 이 값을 만든 이유).
+#             deque(maxlen=) 로 쓰이므로 이 수가 곧 세션당 보관 프레임 상한이다.
+#   하한 방향: rep 의 하강 구간을 담아야 하니 **커야** 한다. 잘리면 대표 프레임 선택
+#             (가장 깊게 앉은 순간)이 하강을 못 보고 고른다.
+#
+# fps 가 오르면 둘이 충돌한다. 그래서 «지금 무엇이 구속하고 있는가» 를 같이 적어 둔다.
+#
+# 지금 구속하는 것: **없다(하한 쪽 여유가 매우 크다).** 아래 MIN_FRAME_INTERVAL_SEC 이
+# 유입을 3.33fps 로 묶으므로 60 프레임 = 18초 분량이고, rep 하나가 18초일 리 없다.
+#
+# ⚠️ 값 60 의 원래 근거는 «10fps × 6초» 였는데, 그 10fps 는 #143 이 유입 상한을 넣으면서
+#    (cac535a) 더 이상 도달할 수 없는 값이 됐다. 즉 **현재 유효 근거는 3.33fps × 18초**이고,
+#    이 여유는 전적으로 그 유입 상한에 기대고 있다. MIN_FRAME_INTERVAL_SEC 을 풀거나
+#    올리면 이 상수의 하한 쪽이 먼저 조인다 — 그때는 60 을 재검증할 것.
 #
 # 오판 방향은 안전한 쪽이다. 크게 잡으면 rep 이 아닌 프레임이 조금 섞일 뿐이지만,
-# 작게 잡으면 진짜 rep 의 앞부분이 잘려 대표 프레임 선택(가장 깊게 앉은 순간)이
-# 하강 구간을 못 보게 된다.
+# 작게 잡으면 진짜 rep 의 앞부분이 잘려 대표 프레임 선택이 하강 구간을 못 보게 된다.
+# 다만 «크게 잡는 쪽» 의 대가가 메모리라는 것이 위 상한 방향이다 — 공짜가 아니다.
 MAX_REP_FRAMES = 60
 
 # 실시간 프레임 «수락» 상한 (이슈 #143 · ㄱ-2 안).
@@ -201,12 +214,38 @@ def accept_frame(state: SessionState, now: float) -> bool:
     return True
 
 
+# 종료한 세션 id 를 얼마나 기억할 것인가 (#191).
+#
+# 아웃박스는 at-least-once 라 같은 StopAnalysis 가 두 번 올 수 있다. 두 번째가 왔을 때
+# «이미 처리했다» 와 «세션을 정말 잃었다» 를 구분하려면 첫 처리를 기억하고 있어야 한다.
+#
+# 값의 근거 — Spring 이 회수분을 다시 보낼 수 있는 가장 이른 시점이다:
+#   lease 60s   (backend outbox.publisher.lock-timeout-seconds, 기본값)
+#   + 폴링 1s   (outbox.publisher.poll-interval-ms, 기본값)
+#   + 데드라인 5s (ExerciseAnalysisService.GRPC_CALL_TIMEOUT_SECONDS)
+#   = 66s
+#
+# ⚠️ 이 값은 **Spring 설정의 복사본**이다. 위 셋 중 하나라도 바뀌면 여기도 바꿔야 한다.
+#    단일 출처로 만들려면 Spring 이 «이 요청은 회수분일 수 있다» 를 요청에 실어 보내야 하는데,
+#    그건 proto 계약 변경이고 지금은 생성 산출물이 두 벌인 상태(#132)라 그 위에 얹지 않았다.
+#
+#    어긋났을 때의 결말은 안전한 쪽이다: 창이 짧으면 두 번째 호출이 그냥 success=False 로
+#    떨어지고, 그건 이 변경 이전의 동작이다(Spring 이 회수분이면 세션을 안 건드린다, #152).
+#    즉 «조용히 틀리는» 게 아니라 «조용히 원래대로» 다.
+STOPPED_SESSION_RETENTION_SEC = 66.0
+
+
 class SessionStateRegistry:
     """sessionId → SessionState 매핑. 모든 접근은 Lock 하에 수행."""
 
-    def __init__(self) -> None:
+    def __init__(self, retention_sec: float = STOPPED_SESSION_RETENTION_SEC) -> None:
         self._lock = threading.Lock()
         self._sessions: dict[int, SessionState] = {}
+        # sessionId → 종료 처리한 시각(monotonic). remove() 가 채우고 was_recently_stopped()
+        # 가 읽는다. 값은 int+float 둘뿐이라 세션당 비용이 사실상 없다 — 검출기(98.7MB)를
+        # 붙들고 있는 것과는 다른 이야기다.
+        self._recently_stopped: dict[int, float] = {}
+        self._retention_sec = retention_sec
 
     def create(
         self,
@@ -270,9 +309,50 @@ class SessionStateRegistry:
         with self._lock:
             return self._sessions.get(session_id)
 
-    def remove(self, session_id: int) -> SessionState | None:
+    def remove(self, session_id: int, now: float | None = None) -> SessionState | None:
+        """상태를 꺼내고, **꺼냈다는 사실**을 보유 기간 동안 남긴다 (#191).
+
+        Args:
+            now: `time.monotonic()` 값. 테스트가 시간을 주입할 수 있게 인자로 받는다
+                 (`accept_frame` 과 같은 방식).
+        """
+        stamp = time.monotonic() if now is None else now
         with self._lock:
-            return self._sessions.pop(session_id, None)
+            state = self._sessions.pop(session_id, None)
+            # 🔴 **실제로 꺼냈을 때만** 기록한다.
+            #
+            # 처음엔 «없었어도 기록해두면 재송신 창을 넓게 덮는다» 고 적었는데 정반대였다.
+            # 호출부(StopAnalysis)가 remove() 직후 같은 id 로 was_recently_stopped() 를 묻기
+            # 때문에, 없어도 기록하면 그 물음이 **항상 True** 가 되어 (나) 분기가 도달 불가가
+            # 된다. 한 번도 없던 세션의 첫 중단 요청까지 «이미 처리됨» 으로 답하게 되고,
+            # 그러면 Spring 은 정말 유실된 세션을 SENT 로 종결한 뒤 빠른 실패를 영영 안 탄다 —
+            # 고치려던 것보다 나쁜 상태다. CodeRabbit 이 PR #172 리뷰에서 잡았다.
+            #
+            # 중복 중단은 여기 안 들어오므로 최초 종료 시각이 그대로 유지된다. 보유 기간은
+            # «언제 실제로 끝났나» 부터 세는 게 맞다 — 재송신이 올 때마다 갱신하면 창이
+            # 무한정 밀린다.
+            if state is not None:
+                self._recently_stopped[session_id] = stamp
+            self._prune_stopped(stamp)
+            return state
+
+    def was_recently_stopped(self, session_id: int, now: float | None = None) -> bool:
+        """보유 기간 안에 종료 처리된 세션인가 — «이미 처리됨» 과 «정말 잃음» 의 구분점."""
+        stamp = time.monotonic() if now is None else now
+        with self._lock:
+            self._prune_stopped(stamp)
+            return session_id in self._recently_stopped
+
+    def _prune_stopped(self, now: float) -> None:
+        """만료분 정리. 호출부가 Lock 을 잡고 있어야 한다.
+
+        쓰기·읽기 양쪽에서 부른다. 읽기에서도 정리하지 않으면, 세션이 더 안 들어오는 동안
+        만료된 id 가 남아 «보유 기간이 지났는데 True» 가 나온다.
+        """
+        cutoff = now - self._retention_sec
+        expired = [sid for sid, at in self._recently_stopped.items() if at < cutoff]
+        for sid in expired:
+            del self._recently_stopped[sid]
 
     def exists(self, session_id: int) -> bool:
         with self._lock:

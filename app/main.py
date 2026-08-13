@@ -42,6 +42,20 @@ async def lifespan(app: FastAPI):
     # 종료 시 gRPC 서버 graceful stop
     stop_grpc_server()
 
+    # 검출기 풀 정리 (#164). 프로세스가 죽으면 OS 가 회수하므로 누수는 아니지만, **몇 개가
+    # 남아 있었는지가 로그에 남는다** — 무중단 배포가 없는 지금 그 숫자가 곧 「배포 때 몇 명이
+    # 끊겼나」 다. 세션 상태 자체는 여전히 메모리에만 있어 복구되지 않는다(outbox §3-2).
+    from app.core.mediapipe_detector import get_pool
+
+    try:
+        left = get_pool().shutdown()
+        if left:
+            logger.warning("종료 시 활성 세션 %d 개가 끊겼다 — 검출기 정리 완료", left)
+        else:
+            logger.info("종료 — 활성 세션 없음")
+    except Exception as e:                          # 풀이 아직 안 만들어졌을 수 있다
+        logger.info("검출기 풀 정리 생략: %s", e)
+
 
 app = FastAPI(
     title=settings.APP_NAME,

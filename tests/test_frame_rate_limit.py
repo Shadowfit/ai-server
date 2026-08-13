@@ -322,6 +322,21 @@ class HandlerArrivalTimeTests(unittest.TestCase):
         def fake_monotonic() -> float:
             return clock["t"]
 
+        def _fake_lease(detect_fn):
+            """핸들러가 `lease_detector(session_id)` 로 바뀌었다(#164 ㄴ 안).
+
+            여기서 재는 것은 «상한이 도착 시각을 쓰는가» 이지 검출기 소유가 아니므로,
+            lease 를 흉내내는 최소 컨텍스트 매니저로 갈음한다.
+            """
+            class _L:
+                def __enter__(self):
+                    return mock.Mock(detect=detect_fn)
+
+                def __exit__(self, *exc):
+                    return False
+
+            return lambda _session_id: _L()
+
         def fake_detect(_image):
             # 추론이 상한(300ms)보다 오래 걸리는 기기. 이것이 완료 시각을 앞으로 밀어낸다.
             clock["t"] += 0.5
@@ -341,7 +356,7 @@ class HandlerArrivalTimeTests(unittest.TestCase):
         with mock.patch.object(pose_endpoint.time, "monotonic", fake_monotonic), \
             mock.patch.object(pose_endpoint, "accept_frame", spy_accept), \
             mock.patch.object(pose_endpoint, "base64_to_image", lambda _: _BLANK_IMAGE), \
-            mock.patch.object(pose_endpoint, "get_detector", lambda: mock.Mock(detect=fake_detect)):
+            mock.patch.object(pose_endpoint, "lease_detector", _fake_lease(fake_detect)):
             clock["t"] = 0.00  # 1번째 프레임 도착
             pose_endpoint.detect_pose(req)
             clock["t"] = 0.10  # 2번째 프레임 도착 — 규약(330ms)보다 빠르다

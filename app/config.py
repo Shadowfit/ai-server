@@ -10,6 +10,17 @@ class Settings(BaseSettings):
     POSE_MIN_DETECTION_CONFIDENCE: float = 0.5
     POSE_MIN_TRACKING_CONFIDENCE: float = 0.5
 
+    # 검출기 풀 크기 = **동시 활성 세션 상한** (#164).
+    #
+    # 0 이면 컨테이너 메모리 한도에서 «유도» 한다 — 검출기 1개 = 98.7MB(M2 실측)이므로
+    #   상한 = (cgroup 한도 − 기본 RSS 100.5MB) ÷ 98.7MB
+    # 이 방식이면 환경(로컬/EC2)이 달라져도 값을 안 고쳐도 되고, 코드에 근거 없는 숫자가
+    # 안 들어간다. 설정값을 주면 그 값을 쓰되 메모리 상한을 넘으면 낮춘다.
+    #
+    # ⚠️ 기본값을 «임의의 숫자» 로 두지 않은 것은 의도다([[feedback_no_arbitrary_threshold_values]]).
+    #    한도도 없고 설정도 없으면 **기동을 거부한다.**
+    POSE_DETECTOR_POOL_SIZE: int = 0
+
     # DTW 설정
     DTW_WINDOW_SIZE: int = 10  # Sakoe-Chiba band 크기
 
