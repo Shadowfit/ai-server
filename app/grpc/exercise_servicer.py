@@ -56,6 +56,59 @@ def _parse_reference_poses(
     return sequences
 
 
+def _extract_reference_poses_from_video(path: str) -> list:
+    """기준 영상 → **점수가 가장 높은 rep 1회**의 프레임별 좌표 (#192).
+
+    🔴 **영상 전체를 넣지 않는다.** 이 좌표는 DTW 대조의 «정답지» 라, 서 있는 구간·촬영
+       전후가 섞이면 사용자의 rep 이 그것들과 비교된다. 실제 rep 하나가 정답지다.
+
+    🔴 **여러 rep 을 평균한 «대표 시퀀스» 는 쓸 수 없다.** `reference_builder` 는 «각도» 를
+       평균하는데 이 표(`exercise_references`)는 «랜드마크» 를 저장하고 AI 가 읽어서 각도로
+       바꾼다. 각도 평균은 랜드마크로 되돌릴 수 없다. 그래서 한 rep 을 그대로 쓴다 —
+       `V4__seed_squat_reference.sql` 이 같은 규칙으로 만들어졌으므로 두 경로가 같은 것을 낸다.
+
+    🔴 **이 함수는 결정적이지 않다** ([#224](https://github.com/Shadowfit/init/issues/224)).
+       같은 영상·같은 코드인데 실행마다 결과가 갈린다 — 2026-08-16 실측에서 **37↔36프레임,
+       score 105.53↔102.87, 최저무릎 95.4°↔96.7°**. 원인 미규명(트래킹 상태·CPU 부하·rep
+       경계 판정 — 셋 다 안 갈랐다).
+
+       **그래서 재추출은 «같은 정답지를 다시 만드는 일» 이 아니다.** `saveReferencePoses` 가
+       기존 행을 교체하므로(#220) 달라진 값이 즉시 전면 적용된다. 관리자가 «영상은 그대로인데
+       한 번 더 눌렀다» 로 채점 기준이 미묘하게 바뀐다는 뜻이다. 크기는 작지만(±1.3 score)
+       **«같은 입력에 같은 출력» 이 성립하지 않는다는 사실 자체**가, 나중에 「정답지를
+       바꿨나?」를 되짚을 때 근거를 없앤다.
+    """
+    from app.api.endpoints.pose import _landmarks_to_json
+    from app.core.reference_builder import _segment_reps
+    from app.core.video_processor import analyze_video
+
+    result = analyze_video(path, "squat")
+    segments = _segment_reps(result.frames)
+    if not segments:
+        raise ValueError("기준 영상에서 유효한 스쿼트 반복을 찾지 못했다")
+
+    best = max(segments, key=lambda r: r.score)
+    frames = [
+        f for f in result.frames
+        if best.start_frame_index <= f.frame_index <= best.end_frame_index and f.squat_metrics
+    ]
+    if not frames:
+        raise ValueError("선택된 rep 구간에 유효 프레임이 없다")
+
+    t0 = frames[0].timestamp
+    logger.info(
+        "[#192] rep %d개 중 최고점 선택 — score=%.2f · %d프레임 · 최저무릎 %.1f°",
+        len(segments), best.score, len(frames), best.min_knee_angle,
+    )
+    return [
+        exercise_pb2.PoseDataRequest(
+            timestamp_sec=round(f.timestamp - t0, 3),
+            joint_coordinates=_landmarks_to_json(f.landmarks),
+        )
+        for f in frames
+    ]
+
+
 class ExerciseServicer(exercise_pb2_grpc.ExerciseServiceServicer):
 
     def StartAnalysis(self, request, context):
@@ -319,20 +372,46 @@ class ExerciseServicer(exercise_pb2_grpc.ExerciseServiceServicer):
         )
 
     def ExtractReferenceData(self, request, context):
-        """[Spring → FastAPI] YouTube URL → 기준 좌표 추출.
+        """[Spring → FastAPI] 기준 영상 → 기준 좌표(정답지) 추출 (#192).
 
-        실제 YouTube 다운로드/MediaPipe 추출은 별도 작업으로 분리.
-        현재는 빈 응답을 돌려주어 인터페이스 호환만 유지한다.
+        `youtube_url` 필드는 **컨테이너 안에서 읽을 수 있는 영상 파일 경로**로 해석한다.
+
+        🔴 **HTTP(S) URL 은 거부한다.** 유튜브 다운로드는 ToS 상 금지이고, 이 프로젝트는
+           그 리스크 수용 여부를 **아직 결정하지 않았다**
+           (`docs/decisions/youtube-coordinate-harvest.md` §4-2·§7). 결정 전에 코드가 먼저
+           내려받기 시작하면 그 미결정이 조용히 없어진다. 필드 이름은 proto 호환 때문에
+           그대로 두되 **의미만 좁힌다.**
+
+        저장은 이 응답이 아니라 **Spring 역호출**로 한다 — 같은 이름의 RPC 를 Spring 도
+        서버로 구현하고 있고(`ExerciseGrpcService.extractReferenceData`), 그쪽이
+        `saveReferencePoses` 로 DB 에 넣는다. 비어 있던 것은 이쪽 절반뿐이었다.
         """
+        url = request.youtube_url or ""
         logger.info(
-            "[Spring → AI] ExtractReferenceData 수신 (exercise=%s, url=%s) — 미구현",
-            request.exercise_id,
-            request.youtube_url,
+            "[Spring → AI] ExtractReferenceData 수신 (exercise=%s, source=%s)",
+            request.exercise_id, url,
         )
+
+        if url.startswith("http://") or url.startswith("https://"):
+            logger.error(
+                "[#192] 원격 URL 은 지원하지 않는다 — 유튜브 다운로드는 미결정 항목이다. "
+                "컨테이너에서 읽을 수 있는 파일 경로를 줄 것 (받은 값: %s)", url,
+            )
+            return exercise_pb2.ExtractResponse(
+                success=False, exercise_id=request.exercise_id, extracted_poses=[]
+            )
+
+        try:
+            poses = _extract_reference_poses_from_video(url)
+        except Exception as e:  # noqa: BLE001 — 사유를 그대로 로그에 남긴다
+            logger.error("[#192] 기준 좌표 추출 실패 (%s): %s", url, e)
+            return exercise_pb2.ExtractResponse(
+                success=False, exercise_id=request.exercise_id, extracted_poses=[]
+            )
+
+        ok = spring_client.send_reference_poses(request.exercise_id, poses)
         return exercise_pb2.ExtractResponse(
-            success=True,
-            exercise_id=request.exercise_id,
-            extracted_poses=[],
+            success=ok, exercise_id=request.exercise_id, extracted_poses=poses
         )
 
 

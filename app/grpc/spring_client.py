@@ -119,3 +119,30 @@ def report_complete_analysis(
                 e.details(),
             )
             time.sleep(wait)
+
+def send_reference_poses(
+    exercise_id: int, poses: list[exercise_pb2.PoseDataRequest]
+) -> bool:
+    """추출한 기준 좌표(정답지)를 Spring 에 보내 저장시킨다 (#192).
+
+    🔴 **`ExtractReferenceData` 는 양방향으로 같은 이름이다.** Spring→AI 는 «추출해라» 는
+       트리거이고, AI→Spring 은 «추출했다, 저장해라» 다. Spring 쪽 수신부는 이미 완성돼
+       있다(`ExerciseGrpcService.extractReferenceData` → `PoseDataService.saveReferencePoses`).
+       비어 있던 것은 이쪽 절반뿐이었다.
+    """
+    try:
+        request = exercise_pb2.ExtractRequest(
+            exercise_id=exercise_id,
+            extracted_poses=poses,
+        )
+        response = get_stub().ExtractReferenceData(request, metadata=call_metadata())
+        logger.info(
+            "[AI → Spring] 기준 좌표 전송 (exercise=%s, count=%d, success=%s)",
+            exercise_id,
+            len(poses),
+            response.success,
+        )
+        return response.success
+    except grpc.RpcError as e:
+        logger.error("[AI → Spring] 기준 좌표 전송 실패: %s", e.details())
+        return False
