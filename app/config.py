@@ -63,3 +63,35 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def _assert_tokens_separated() -> None:
+    """두 토큰이 같으면 **기동을 거부한다** (#230).
+
+    🔴 **주석만 있고 강제가 없었다.** 위 `AI_PUBLIC_TOKEN` 주석은 *"예전엔 둘이 같은 값이라,
+       앱 번들에서 추출한 토큰으로 Spring 내부 gRPC 까지 칠 수 있었다"* 는 **실제 사고 이력**
+       (#134)을 적어두고 있는데, 같은 값을 다시 넣는 것을 막는 코드는 없었다. compose 의
+       `${...:?}` 는 **값의 존재만** 본다.
+
+    즉 운영자가 «토큰 두 개 넣기 귀찮은데 같은 걸로» 하는 순간 #134 가 되돌아오고,
+    **아무도 알려주지 않는다.**
+
+    거부하는 쪽을 고른 이유는 이 프로젝트의 기존 규약과 같다 — 검출기 풀도 «근거가 없으면
+    기본값을 박지 말고 기동을 거부» 한다(`mediapipe_detector.get_pool`). 조용히 도는 것보다
+    안 뜨는 쪽이 낫다.
+
+    ⚠️ **빈 값은 여기서 막지 않는다.** 로컬·테스트가 토큰 없이 도는 경로가 있고, 그건 이
+    함수가 답할 질문이 아니다(운영 필수화는 compose 의 `:?` 가 맡는다).
+    """
+    a = settings.INTERNAL_API_TOKEN
+    b = settings.AI_PUBLIC_TOKEN
+    if a and b and a == b:
+        raise RuntimeError(
+            "🔴 INTERNAL_API_TOKEN 과 AI_PUBLIC_TOKEN 이 같다 (#230). "
+            "AI_PUBLIC_TOKEN 은 앱 번들에 배포되는 값이라, 같은 값을 쓰면 번들에서 추출한 "
+            "토큰으로 Spring 내부 gRPC 까지 통과한다 — 이슈 #134 가 그 사고였고 두 값을 "
+            "나눈 이유다. 서로 다른 무작위 값을 넣을 것 (.env.example 참고)."
+        )
+
+
+_assert_tokens_separated()
