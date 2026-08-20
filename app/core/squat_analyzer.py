@@ -92,10 +92,33 @@ def _extract_raw_metrics(landmarks: list[Landmark]) -> _RawSquatFrame:
     )
 
 
-def _phase_from_angles(current_angle: float, delta: float) -> str:
-    if current_angle <= 95:
+def _phase_from_angles(
+    current_angle: float,
+    delta: float,
+    *,
+    bottom_threshold: float,
+    standing_threshold: float,
+) -> str:
+    """국면 이름표. **rep 판정과 같은 자를 쓴다** (이슈 #218).
+
+    예전에는 여기만 95/155 상수였고 rep 판정은 100/150 이라, 두 밴드에서 응답이 자기모순이었다:
+
+    - 150~155° — rep 상태기계는 `standing` 으로 보고 **rep 을 세는데** 이름표는 아직 `ascending`
+    - 95~100° — 상태기계는 `bottom` 인데 이름표는 `descending`/`transition`
+
+    `phase` 는 내부값이 아니라 응답 스키마에 나가므로(`models/video.py`), 「rep 은 올랐는데
+    국면은 아직 올라가는 중」이 그대로 밖으로 나갔다.
+
+    🔴 **자를 인자로 받는 것이 요점이다.** 같은 값을 두 군데 적어두면 한쪽만 바뀌었을 때
+    조용히 다시 갈라진다 — 호출부가 rep 판정에 쓰는 바로 그 변수를 넘기므로 구조적으로 못 갈린다.
+    `analyze_squat_frames` 의 두 인자를 호출자가 덮어써도 이름표가 같이 따라온다.
+
+    delta 문턱(±4)은 그대로 둔다 — 저건 각도 축이 아니라 **속도 축**이고, rep 판정에 대응하는
+    상대가 없다.
+    """
+    if current_angle <= bottom_threshold:
         return "bottom"
-    if current_angle >= 155:
+    if current_angle >= standing_threshold:
         return "standing"
     if delta <= -4:
         return "descending"
@@ -151,7 +174,12 @@ def analyze_squat_frames(
             continue
 
         delta = 0.0 if previous_angle is None else smooth_knee - previous_angle
-        phase = _phase_from_angles(smooth_knee, delta)
+        phase = _phase_from_angles(
+            smooth_knee,
+            delta,
+            bottom_threshold=bottom_threshold,
+            standing_threshold=standing_threshold,
+        )
 
         if rep_state == "waiting_for_standing":
             if smooth_knee >= standing_threshold:

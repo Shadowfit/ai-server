@@ -13,9 +13,13 @@
 rep → 콜백 → pose_data 적재 → 리포트 선계산이 한 번도 안 돌았다. 그래서 이 스크립트는
 **200 을 세지 않고 rep 과 리포트 값을 센다.** totalReps 가 0이면 실패로 끝낸다.
 
-🔴 가시성 미달 프레임도 200 + success=true 로 온다(pose.py:127-132). 「검출 30/31」로 세면
-정상으로 보이지만 판정에 들어간 프레임은 0일 수 있다 — #196 이 지적한 함정이라 여기서는
-**AI 응답의 rep_number 증가**를 따로 센다.
+🔴 「검출 30/31」로 세면 정상으로 보이지만 판정에 들어간 프레임은 0일 수 있다 — #196 이 지적한
+함정이라 여기서는 **AI 응답의 rep_number 증가**를 따로 센다.
+
+  ⚠️ 2026-08-20 (#267) 로 계약이 바뀌었다. 예전에는 가시성 미달 프레임이 `200 + success=true`
+  로 와서 이 스크립트도 한 번 속았는데(`edb91cf`), 지금은 **판정에 못 들어간 프레임은 전부
+  `success=false` + `skip_reason`** 이다. 그래서 아래 집계는 사람이 읽는 `message` 문자열이
+  아니라 **`skip_reason` enum** 으로 센다 — 문자열 계약은 다음 사람이 또 걸린다.
 
 입력 영상
 ---------------------------------------------------------------------------
@@ -41,6 +45,20 @@ import time
 
 import cv2
 import httpx
+
+# 🔴 사유는 **enum 에서 가져온다.** 바로 아래 재시도 게이트가 문자열 리터럴이었는데, 그건 이
+#    스크립트 머리(#267 항목)가 「문자열 계약은 다음 사람이 또 걸린다」고 적어둔 것과 정면으로
+#    어긋난다. 리터럴이면 서버에서 멤버 이름이 바뀌어도 비교가 조용히 «항상 거짓» 이 되고,
+#    그러면 배정 대기 루프가 통째로 사라져 #196 의 경쟁이 다시 열린다 — 그것도 테스트 없이.
+#    이 import 는 사용법(위 §)이 요구하는 `PYTHONPATH=.` 아래에서 그대로 동작한다.
+from app.models.pose import PoseSkipReason
+
+# 배정이 아직 안 끝났다는 신호. 이 둘일 때만 재시도한다 — 나머지 사유는 배정이 끝난 뒤에야
+# 나올 수 있어서, 재시도해도 같은 답이 온다.
+_NOT_ASSIGNED_YET = {
+    PoseSkipReason.NO_LEASE.value,
+    PoseSkipReason.SESSION_NOT_FOUND.value,
+}
 
 
 def log(step: str, detail: str = "") -> None:
@@ -153,19 +171,26 @@ def main() -> int:
                 log("프레임 전송 실패", f"{rr.status_code} {rr.text[:160]}")
                 return 1
             body = rr.json()
-            if body.get("success"):
+            # 🔴 재시도 조건은 «성공했나» 가 아니라 «아직 배정 안 됐나» 다 (#267).
+            #    success 로 판단하면 가시성 미달·속도 상한 프레임까지 «배정 대기» 로 오해해
+            #    12초를 헛기다린다 — 그 둘은 배정이 끝난 뒤에야 나올 수 있는 사유다.
+            if body.get("skip_reason") not in _NOT_ASSIGNED_YET:
                 break
             if attempt == 0:
                 log("AI 배정 대기", str(body.get("message"))[:90])
             time.sleep(1.0)
         sent += 1
 
-        # 🔴 200 은 아무것도 보장하지 않는다. success=false 면 그 프레임은 판정에 안 들어갔다.
-        if not body.get("success"):
-            skipped_msgs[str(body.get("message"))[:60]] =                 skipped_msgs.get(str(body.get("message"))[:60], 0) + 1
-            continue
+        # landmarks 는 **스킵된 프레임에도 들어 있다.** 그게 #196 이 속은 지점이라 스킵보다
+        # 먼저 센다 — 「랜드마크 30 · 판정 0」이 로그에 나란히 찍혀야 함정이 보인다.
         if body.get("landmarks"):
             detected += 1
+
+        # 🔴 200 은 아무것도 보장하지 않는다. success=false 면 그 프레임은 판정에 안 들어갔다.
+        if not body.get("success"):
+            reason = str(body.get("skip_reason") or "UNKNOWN")
+            skipped_msgs[reason] = skipped_msgs.get(reason, 0) + 1
+            continue
         if body.get("angles"):
             judged += 1
         rep = body.get("rep_count") or 0
@@ -177,8 +202,8 @@ def main() -> int:
     # 「검출 N/N」이 아니라 «판정에 들어간 프레임» 을 따로 센다 — 가시성 미달·속도 상한 프레임은
     # landmarks 는 들어 있고 angles 가 없다. 둘을 같은 숫자로 세면 #196 처럼 오독한다.
     log("프레임 유입", f"전송 {sent} · 랜드마크 {detected} · 판정에 들어감 {judged} · rep {max_rep}회")
-    for msg, n in skipped_msgs.items():
-        log("  스킵", f"{n}회 — {msg}")
+    for reason, n in skipped_msgs.items():
+        log("  스킵", f"{n}회 — {reason}")
 
     # ── ④ 세션 종료 ─────────────────────────────────────────────────────────
     r = http.patch(f"{args.spring}/sessions/{session_id}/end", headers=auth)
