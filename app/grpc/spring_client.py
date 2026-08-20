@@ -28,6 +28,11 @@ _lock = threading.Lock()
 _COMPLETE_MAX_ATTEMPTS = 3
 _COMPLETE_BACKOFF_SECONDS = (1.0, 3.0)
 
+# SavePoseDataBatch 도 실패하면 rep 하나 분량이 통째로 사라진다 (#188). 값은 위 CompleteAnalysis
+# 계약을 그대로 복제한 것이다 — 유실 빈도가 미측정이라(#151) 새 숫자를 고를 근거가 없다.
+_POSE_BATCH_MAX_ATTEMPTS = 3
+_POSE_BATCH_BACKOFF_SECONDS = (1.0, 3.0)
+
 
 def auth_metadata() -> tuple[tuple[str, str], ...]:
     return (("authorization", f"Bearer {settings.INTERNAL_API_TOKEN}"),)
@@ -51,21 +56,64 @@ def get_stub() -> exercise_pb2_grpc.ExerciseServiceStub:
 def report_pose_data_batch(
     session_id: int, pose_data_list: list[exercise_pb2.PoseDataRequest]
 ) -> None:
-    """rep 1회 완성 시 Spring에 PoseData 묶음 전송."""
-    try:
-        request = exercise_pb2.PoseDataBatchRequest(
-            session_id=session_id,
-            pose_data=pose_data_list,
-        )
-        response = get_stub().SavePoseDataBatch(request, metadata=call_metadata())
-        logger.info(
-            "[AI → Spring] PoseData 배치 전송 (session=%s, count=%d, success=%s)",
-            session_id,
-            len(pose_data_list),
-            response.success,
-        )
-    except grpc.RpcError as e:
-        logger.error("[AI → Spring] PoseData 배치 전송 실패: %s", e.details())
+    """rep 1회 완성 시 Spring에 PoseData 묶음 전송. 실패 시 백오프로 재시도.
+
+    재시도가 없던 동안 이 경로는 실패하면 **rep 하나 분량이 통째로 사라졌다**(#188).
+    세 콜백 중 유일하게 재전송도 수신측 멱등도 없던 자리다.
+
+    값(3회 · 1s → 3s)은 새로 정한 상수가 아니라 **같은 채널·같은 방향인 CompleteAnalysis 의
+    계약을 그대로 복제**한 것이다. 유실 빈도가 아직 측정된 적이 없어(#151 — AI 계측 0줄)
+    지금 새 숫자를 고르면 근거 없는 값이 된다.
+
+    ⚠️ CompleteAnalysis 와 다른 점: 저건 **세션당 1회**지만 이건 **rep 마다** 온다. 재시도가
+    끝까지 가면 worst-case 4초 동안 이 워커가 붙잡히고, 그만큼 프레임 유입이 밀린다.
+    CompleteAnalysis 에는 없던 대가다 — 유입 지연이 관측되면 #206(gRPC 예산 미전파)과 묶어
+    다시 본다.
+
+    중복은 수신측이 흡수한다 — Spring 이 (session_id, rep_number, timestamp_sec, created_at)
+    유니크 키로 멱등을 건다(docs/decisions/pose-batch-idempotency-implementation.md).
+    재전송에도 created_at 이 같아야 하므로 그 값은 **AI 가 보내지 않고 Spring 이 세션 시작
+    시각에서 가져온다** — 이 함수가 시각을 만들지 않는 것이 설계다.
+    """
+    request = exercise_pb2.PoseDataBatchRequest(
+        session_id=session_id,
+        pose_data=pose_data_list,
+    )
+
+    # 메타데이터를 루프 밖에서 한 번만 만든다 — 안에서 만들면 매 attempt 마다 새 correlation id
+    # 가 발급돼 같은 배치의 시도들이 서로 안 묶인다(report_complete_analysis 와 같은 이유).
+    metadata = call_metadata()
+
+    for attempt in range(1, _POSE_BATCH_MAX_ATTEMPTS + 1):
+        try:
+            response = get_stub().SavePoseDataBatch(request, metadata=metadata)
+            logger.info(
+                "[AI → Spring] PoseData 배치 전송 (session=%s, count=%d, success=%s, attempt=%d)",
+                session_id,
+                len(pose_data_list),
+                response.success,
+                attempt,
+            )
+            return
+        except grpc.RpcError as e:
+            if attempt == _POSE_BATCH_MAX_ATTEMPTS:
+                logger.error(
+                    "[AI → Spring] PoseData 배치 전송 실패 (session=%s, count=%d, %d회 시도): %s",
+                    session_id,
+                    len(pose_data_list),
+                    attempt,
+                    e.details(),
+                )
+                return
+            backoff = _POSE_BATCH_BACKOFF_SECONDS[attempt - 1]
+            logger.warning(
+                "[AI → Spring] PoseData 배치 전송 실패 (session=%s, attempt=%d) — %.1fs 후 재시도: %s",
+                session_id,
+                attempt,
+                backoff,
+                e.details(),
+            )
+            time.sleep(backoff)
 
 
 def report_complete_analysis(
