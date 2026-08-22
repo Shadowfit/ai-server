@@ -108,10 +108,27 @@ def detect_pose(req: PoseRequest):
     #    아니다» 라고 답하면, 공격자가 session_id 를 훑어 **살아있는 세션을 열거**할 수 있다 —
     #    막으려던 것의 절반을 응답으로 되돌려주는 셈이다. 구분은 서버 로그에만 남긴다.
     #
-    # ⚠️ 1단계는 compat 다: 세션에 보관값이 없거나(배포 전 세션) 요청이 값을 안 보내면 통과한다.
-    #    강제는 프론트가 동봉하기 시작한 뒤 2단계에서 켠다 — 지금 켜면 배포 순간 전부 끊긴다.
-    if state.session_nonce is not None and req.session_nonce is not None:
-        if not secrets.compare_digest(req.session_nonce, state.session_nonce):
+    # 🟢 **2단계 — 강제.** 세션이 값을 갖고 있으면 요청도 맞는 값을 내야 한다. 1단계에서는
+    #    «요청이 값을 안 보냄» 도 통과였는데, 그 창이 곧 이 방어의 부재였다.
+    #
+    # ⚠️ **세션에 보관값이 없으면(state.session_nonce is None) 여전히 통과한다.** 구멍처럼
+    #    보이지만 **여기에 도달할 수 있는 세션이 사실상 없다.**
+    #
+    #    ① 배포 «후» 만들어진 세션은 항상 값을 갖는다(SessionService 가 무조건 발급한다).
+    #    ② 배포 «전» 세션의 상태는 이 registry 가 프로세스 메모리라 **재배포로 통째로 날아간다**
+    #       — 그런 요청은 이 검사에 닿기도 전에 위쪽 `state is None` 에서 떨어진다.
+    #    ③ 그래서 실제로 이 분기가 열리는 경로는 **재부착 하나**다: Spring 이 session_nonce 가
+    #       NULL 인 옛 행(V8 이전 세션)으로 ReattachAnalysis 를 보낼 때. 그 행들도 세션
+    #       타임아웃이 걷어간다.
+    #
+    #    즉 막아서 얻을 것이 없고(공격자가 NULL 보관값 상태를 만들 수단이 없다), 막으면 옛
+    #    세션을 되살리는 경로만 끊긴다.
+    if state.session_nonce is not None:
+        # compare_digest 는 str 을 받으므로 None 을 먼저 가른다. «안 보냄» 과 «틀림» 은
+        # 아래에서 같은 응답으로 합쳐진다 — 클라 입장에서 구분할 이유가 없고, 구분하면
+        # «이 세션은 nonce 를 요구한다» 는 사실이 새어 나간다.
+        presented = req.session_nonce
+        if presented is None or not secrets.compare_digest(presented, state.session_nonce):
             # 값은 절대 로그에 남기지 않는다 — 남기면 로그를 읽는 사람이 그 세션의 소유자가 된다.
             logger.warning(
                 "세션 %s 소유권 대조 실패 — 프레임을 버린다 (#187). 응답은 «세션 없음» 과 같다",
