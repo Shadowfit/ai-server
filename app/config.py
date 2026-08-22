@@ -32,9 +32,6 @@ class Settings(BaseSettings):
     SQUAT_ROI_MAX_X: float = 0.78
     SQUAT_ROI_MAX_Y: float = 0.76
 
-    # Spring Boot 백엔드 URL (전처리 결과 저장용)
-    BACKEND_URL: str = "http://localhost:8080/api/v1"
-
     # 내부 서비스 간 공유 비밀키 (Spring과 동일한 값이어야 함).
     # ⚠️ 이 값은 **서버 밖으로 나가지 않는다** — gRPC 양방향(Spring→AI 인터셉터,
     # AI→Spring 콜백)에만 쓴다. 클라이언트에 배포하면 안 된다 (이슈 #134).
