@@ -76,5 +76,15 @@ if bad:
 PY
 
 echo
-echo "⚠️ backend/src/main/proto/exercise.proto 와 계약이 갈리면 런타임 직렬화 오류가 난다."
-echo "   .proto 를 고쳤다면 양쪽을 맞출 것 (.github/workflows/proto-sync-check.yml 이 PR 에서 막는다)."
+# 🔴 두 .proto 가 갈리면 런타임 직렬화 오류가 난다. CI(.github/workflows/proto-sync-check.yml)가
+#    PR 에서 막지만, 여기서 **먼저** 막는다 — 생성까지 끝내고 푸시한 뒤에 아는 것보다 낫다.
+#
+#    이 검사는 원래 ai-server/gen_proto.sh 에만 있었다. 진입점이 두 벌이고 안전장치가 서로
+#    달라서(루트는 proto 드리프트를, 이쪽은 venv·import 규약을) «어느 쪽을 돌렸나» 가 보장을
+#    갈랐다. 그 스크립트를 지우면서 이쪽으로 옮긴다 — 남기는 쪽이 둘 다 갖는다 (#319).
+if ! diff -q app/proto/exercise.proto ../backend/src/main/proto/exercise.proto >/dev/null; then
+    echo "🔴 두 .proto 가 다르다 — 계약이 갈라졌다. 맞추고 다시 실행할 것." >&2
+    diff -u ../backend/src/main/proto/exercise.proto app/proto/exercise.proto >&2 || true
+    exit 1
+fi
+echo "✅ backend/ai-server .proto 동일"
