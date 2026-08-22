@@ -7,12 +7,15 @@ StopAnalysis 또는 CompleteAnalysis 콜백 직후 제거된다.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
 
 from app.models.pose import Landmark
+
+logger = logging.getLogger(__name__)
 
 # rep 하나에 담길 수 있는 최대 프레임 수 (이슈 #91).
 #
@@ -94,6 +97,17 @@ class SessionState:
     exercise_id: int
     exercise_type: str = "squat"
     persona: str = "BEGINNER"
+    # 세션 소유권 검증용 비밀값 (이슈 #187 안 (d)).
+    #
+    # Spring 이 세션 생성 시 만들어 ① REST 응답으로 클라에, ② StartAnalysis/ReattachAnalysis 로
+    # 여기에 흘린다. POST /pose 가 동봉한 값과 이 값을 대조하는 것이 방어의 전부다 — session_id 는
+    # AUTO_INCREMENT 순차 정수라 추측되지만 이 값은 안 된다.
+    #
+    # None = 이 기능 배포 전에 시작된 세션. 1단계는 그런 세션을 검증 없이 통과시킨다(compat).
+    # 안 그러면 배포 순간 진행 중이던 세션이 전부 끊긴다.
+    #
+    # 🔴 로그에 찍지 말 것. 값이 로그에 남으면 로그를 읽는 사람이 그 세션의 소유자가 된다.
+    session_nonce: str | None = None
     reference_angles: list[list[float]] = field(default_factory=list)
 
     # 진행 중인 rep에 누적되는 프레임들.
@@ -289,6 +303,7 @@ class SessionStateRegistry:
         exercise_type: str = "squat",
         persona: str = "BEGINNER",
         initial_rep_count: int = 0,
+        session_nonce: str | None = None,
     ) -> SessionState:
         with self._lock:
             state = SessionState(
@@ -298,6 +313,7 @@ class SessionStateRegistry:
                 persona=persona,
                 reference_angles=reference_angles,
                 rep_count=initial_rep_count,
+                session_nonce=session_nonce,
             )
             self._sessions[session_id] = state
             return state
@@ -310,6 +326,7 @@ class SessionStateRegistry:
         exercise_type: str = "squat",
         persona: str = "BEGINNER",
         initial_rep_count: int = 0,
+        session_nonce: str | None = None,
     ) -> tuple[SessionState, bool]:
         """재부착 전용. 상태가 이미 있으면 **보존하고** 그대로 돌려준다.
 
@@ -326,6 +343,19 @@ class SessionStateRegistry:
         with self._lock:
             existing = self._sessions.get(session_id)
             if existing is not None:
+                # 분석 상태는 손대지 않는다(이 메서드의 전부). 다만 nonce 는 분석 상태가 아니라
+                # **신원**이고, 살아있는 상태가 아직 그것을 모를 수 있다 — 이 기능 배포 전에
+                # 시작돼 배포 후 재부착으로 돌아온 세션이다. 그 한 경우에만 채운다.
+                #
+                # 이미 값이 있으면 덮지 않는다. Spring 은 같은 DB 행에서 읽으므로 같은 값을 보내고,
+                # 다르다면 그건 «둘 중 하나가 틀렸다» 라 조용히 덮을 일이 아니다(로그만 남긴다).
+                if session_nonce and existing.session_nonce is None:
+                    existing.session_nonce = session_nonce
+                elif session_nonce and existing.session_nonce != session_nonce:
+                    logger.warning(
+                        "세션 %s 재부착 — 보관 중인 소유권 값과 다른 값이 왔다. 보관값을 유지한다 (#187)",
+                        session_id,
+                    )
                 return existing, True
 
             state = SessionState(
@@ -335,6 +365,7 @@ class SessionStateRegistry:
                 persona=persona,
                 reference_angles=reference_angles,
                 rep_count=initial_rep_count,
+                session_nonce=session_nonce,
             )
             self._sessions[session_id] = state
             return state, False

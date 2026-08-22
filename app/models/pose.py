@@ -50,6 +50,15 @@ class PoseRequest(BaseModel):
         default=None,
         description="운동 세션 ID. 있으면 누적 분석 + rep 감지 시 Spring 콜백",
     )
+    session_nonce: str | None = Field(
+        default=None,
+        description=(
+            "세션 소유권 검증용 비밀값 (이슈 #187). 세션 시작·재부착·진행중조회 응답으로 "
+            "Spring 이 내려준 값을 그대로 실어 보낸다. session_id 는 순차 정수라 추측되지만 "
+            "이 값은 안 되므로, 남의 세션에 프레임을 꽂는 것을 이 대조가 막는다. "
+            "1단계는 호환 모드다 — 안 보내면 검증을 건너뛴다."
+        ),
+    )
     timestamp_sec: float | None = Field(
         default=None,
         deprecated=True,

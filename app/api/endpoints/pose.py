@@ -6,6 +6,7 @@ rep 1회가 완성될 때마다 Spring에 PoseData 묶음을 콜백한다.
 
 import json
 import logging
+import secrets
 import time
 
 import cv2
@@ -96,6 +97,31 @@ def detect_pose(req: PoseRequest):
             skip_reason=PoseSkipReason.SESSION_NOT_FOUND,
             message=f"세션 {req.session_id}가 시작되지 않았습니다 (StartAnalysis 먼저 호출 필요)",
         )
+
+    # 세션 소유권 대조 (이슈 #187 안 (d)).
+    #
+    # 여기까지 온 요청은 «토큰이 맞다» 까지만 증명됐다. 그 토큰은 앱 번들에 들어가므로 사실상
+    # 공개값이고, session_id 는 AUTO_INCREMENT 순차 정수라 추측된다 — 즉 이 대조가 없으면
+    # 토큰을 뽑은 누구나 남의 세션에 프레임을 꽂을 수 있다(그리고 그 데이터는 Spring DB 까지 간다).
+    #
+    # 🔴 **거절 응답이 «세션 없음» 과 같은 모양이어야 한다.** 여기서 «세션은 있는데 네 것이
+    #    아니다» 라고 답하면, 공격자가 session_id 를 훑어 **살아있는 세션을 열거**할 수 있다 —
+    #    막으려던 것의 절반을 응답으로 되돌려주는 셈이다. 구분은 서버 로그에만 남긴다.
+    #
+    # ⚠️ 1단계는 compat 다: 세션에 보관값이 없거나(배포 전 세션) 요청이 값을 안 보내면 통과한다.
+    #    강제는 프론트가 동봉하기 시작한 뒤 2단계에서 켠다 — 지금 켜면 배포 순간 전부 끊긴다.
+    if state.session_nonce is not None and req.session_nonce is not None:
+        if not secrets.compare_digest(req.session_nonce, state.session_nonce):
+            # 값은 절대 로그에 남기지 않는다 — 남기면 로그를 읽는 사람이 그 세션의 소유자가 된다.
+            logger.warning(
+                "세션 %s 소유권 대조 실패 — 프레임을 버린다 (#187). 응답은 «세션 없음» 과 같다",
+                req.session_id,
+            )
+            return PoseResponse(
+                success=False,
+                skip_reason=PoseSkipReason.SESSION_NOT_FOUND,
+                message=f"세션 {req.session_id}가 시작되지 않았습니다 (StartAnalysis 먼저 호출 필요)",
+            )
 
     analyzer = get_analyzer(state.exercise_type)
     if analyzer is None:

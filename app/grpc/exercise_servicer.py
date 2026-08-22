@@ -173,12 +173,16 @@ class ExerciseServicer(exercise_pb2_grpc.ExerciseServiceServicer):
                 status=exercise_pb2.SessionStatus.FAILED,
             )
 
+        # 소유권 비밀값을 세션 상태에 보관한다 (#187 안 (d)). POST /pose 가 동봉한 값과
+        # 여기를 대조한다. proto3 라 «없음» 이 빈 문자열로 오므로 None 으로 되돌린다 —
+        # 빈 문자열을 그대로 두면 «빈 값을 보낸 요청» 과 «값이 없는 세션» 이 같아진다.
         get_registry().create(
             session_id=session_id,
             exercise_id=exercise_id,
             reference_angles=reference_angles,
             exercise_type=exercise_type,
             persona=persona,
+            session_nonce=request.session_nonce or None,
         )
 
         now = Timestamp()
@@ -264,6 +268,7 @@ class ExerciseServicer(exercise_pb2_grpc.ExerciseServiceServicer):
             exercise_type=exercise_type,
             persona=request.persona or "BEGINNER",
             initial_rep_count=request.initial_rep_count,
+            session_nonce=request.session_nonce or None,
         )
 
         if already_active:

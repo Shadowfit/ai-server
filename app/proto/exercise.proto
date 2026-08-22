@@ -68,6 +68,13 @@ message AnalyzeRequest {
   repeated PoseDataRequest reference_poses = 4;
   // 페르소나별 싱크로율 임계값 계산용 (BEGINNER/ADVANCED/DIET/REHAB). 빈 문자열이면 AI측에서 BEGINNER로 취급.
   string persona = 5;
+  // 세션 소유권 검증용 비밀값 (이슈 #187 안 (d)). Spring 이 세션 생성 시 만들어
+  // ① REST 응답으로 그 클라에게, ② 이 필드로 AI 에게 흘린다. AI 는 세션 상태에 보관했다가
+  // POST /pose 가 동봉한 값과 대조한다 — session_id 는 순차 정수라 추측되지만 이 값은 안 된다.
+  //
+  // ⚠️ 1단계는 compat 다: 빈 문자열이면 AI 가 검증을 건너뛴다. 안 그러면 배포 순간
+  //    아직 nonce 를 모르는 진행 중 세션이 전부 끊긴다.
+  string session_nonce = 6;
 }
 
 message AnalyzeResponse {
@@ -90,6 +97,10 @@ message ReattachRequest {
   int32 initial_rep_count = 5;
   // 이 세션에서 이미 흐른 초 = MAX(pose_data.timestamp_sec) (이슈 #156).\n  // AI 는 프레임 시각을 «첫 프레임 도착 기준 경과» 로 만드는데, 재부착하면 그 기준이 재부착\n  // 시점으로 리셋된다. 이 값이 없으면 재부착 이후 프레임의 timestamp_sec 이 0 부터 다시 시작해\n  // 리포트의 시각 표시가 뒤로 감는다. initial_rep_count 가 rep 축에서 하는 일을 시간 축에서 한다.\n  //\n  // ⚠️ session.start_time 기준 경과가 **아니다.** 그건 원점이 «세션 생성» 이라 AI 가 의도적으로\n  // 뺀 «자세 잡는 시간» 이 다시 들어간다. 두 축이 같은 데이터원(pose_data)에서 나와야 원점이 하나다.
   double elapsed_sec = 6;
+  // 재부착 때도 같은 값을 다시 실어준다 (#187 (d)). AI 는 StopAnalysis/CompleteAnalysis 뒤
+  // 세션 상태를 버리므로, 재부착으로 상태를 다시 세울 때 nonce 도 같이 서지 않으면
+  // 이어하기가 «검증은 켜졌는데 보관값이 없는» 상태가 된다.
+  string session_nonce = 7;
 }
 
 message ReattachResponse {
