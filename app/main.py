@@ -1,6 +1,7 @@
 """ShadowFit AI Server — FastAPI 진입점."""
 
 import logging
+import sys
 import threading
 from contextlib import asynccontextmanager
 
@@ -13,6 +14,7 @@ from app.core.mediapipe_detector import get_detector
 from app.grpc.correlation import install_log_record_factory
 from app.grpc.server import run_grpc_server, stop_grpc_server
 from app.middleware.auth import InternalAuthMiddleware
+from app.observability import frame_path
 
 # basicConfig 보다 먼저 — 포맷의 %(cid)s 를 채울 속성을 LogRecord 에 주입하는 팩토리를 건다.
 # Spring 로그의 [cid|sessionId] 와 같은 id 라서 두 서비스 로그를 한 줄기로 이어 읽을 수 있다.
@@ -75,6 +77,31 @@ app.add_middleware(
 # Starlette 는 나중에 add 한 미들웨어를 바깥쪽에 두므로 이 줄이 가장 바깥(요청 진입 시 첫 통과 지점)이 된다.
 # OPTIONS preflight 와 /health 등 공개 경로는 미들웨어 내부에서 우회한다.
 app.add_middleware(InternalAuthMiddleware)
+
+# 프레임 경로 계측 (decisions/ai-receive-path-scaling.md §12). 기본은 꺼져 있다.
+#
+# 인증 미들웨어보다 **뒤에** add 한다 = 가장 바깥이다. 재려는 것이 «요청이 도착한 순간부터
+# 워커에 실릴 때까지» 라, 인증·CORS 가 무는 시간도 그 구간 안에 들어와야 한다.
+if settings.FRAME_PATH_METRICS:
+    _recorder = frame_path.install(settings.FRAME_PATH_SAMPLES)
+    app.add_middleware(
+        frame_path.FramePathMiddleware,
+        recorder=_recorder,
+        path=f"{api_router.prefix}/pose",
+    )
+    logger.warning(
+        "🔬 프레임 경로 계측 ON — 표본 %d. 이 계측 자체가 GIL 을 잡는다. "
+        "절대값을 인용하려면 계측 OFF 판과의 대조가 선행이다",
+        settings.FRAME_PATH_SAMPLES,
+    )
+
+# GIL 스위치 간격을 바꾼다(후보 1순위 §10-1 을 흔드는 손잡이). 0 이면 안 건드린다.
+if settings.GIL_SWITCH_INTERVAL > 0:
+    sys.setswitchinterval(settings.GIL_SWITCH_INTERVAL)
+    logger.warning(
+        "🔬 sys.setswitchinterval(%.6f) — 기본값(0.005)이 아니다. 이 판의 조건에 적을 것",
+        settings.GIL_SWITCH_INTERVAL,
+    )
 
 app.include_router(api_router)
 

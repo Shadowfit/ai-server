@@ -26,6 +26,7 @@ from app.grpc.session_state import (
     get_registry,
 )
 from app.models.pose import Landmark, PoseRequest, PoseResponse, PoseSkipReason
+from app.observability import frame_path
 from app.utils.image_utils import base64_to_image
 
 logger = logging.getLogger(__name__)
@@ -58,9 +59,13 @@ def detect_pose(req: PoseRequest):
     # 상한(300ms)을 넘는 기기에서는 클라가 아무리 빨리 보내도 전부 수락되고, 이 상한이 막으려던
     # rep 소실이 그대로 재발한다. `test_frame_rate_limit` 의 핸들러 회귀 테스트가 이 순서를 고정한다.
     received_at = time.monotonic()
+    # 여기가 «워커에 실린» 순간이다. 요청 도착과의 차(`wait`)가 §12 가 물은 값이고, 계측이
+    # 꺼져 있으면 이 호출들은 전부 즉시 반환한다(decisions/ai-receive-path-scaling.md §12).
+    frame_path.mark_handler_in()
 
     image_bgr = base64_to_image(req.image)
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+    frame_path.mark_decoded()
 
     # 세션이 있으면 «그 세션 전용» 검출기를 쓴다(#164). 스레드 로컬이면 요청이 아무 스레드나
     # 집어가면서 직전에 본 다른 세션 때문에 트래킹이 깨진다 — 실사용 3fps 에서 검출률 손실
@@ -76,7 +81,11 @@ def detect_pose(req: PoseRequest):
             message=f"세션 {req.session_id}에 배정된 분석기가 없습니다 (StartAnalysis 먼저 호출 필요)",
         )
     with lease as detector:
+        # 리스 획득까지가 후보 2순위(검출기 획득 경로, §10-2)다. 추론과 갈라서 잰다 —
+        # 합쳐 재면 「추론이 비싸다」로 읽히고 그건 R6 가 이미 반증한 답이다.
+        frame_path.mark_leased()
         landmarks = detector.detect(image_rgb)
+    frame_path.mark_inferred()
 
     if not landmarks:
         return PoseResponse(

@@ -56,6 +56,24 @@ class Settings(BaseSettings):
     # CORS 허용 출처
     CORS_ORIGINS: list[str] = ["*"]
 
+    # --- 프레임 경로 계측 (decisions/ai-receive-path-scaling.md §12) ---
+    #
+    # 「346 RPS 천장에서 서버가 9.5 vCPU 만 쓰는 이유」를 앱 안에서 직접 재려고 붙였다.
+    # py-spy 가 §11 에서 한계에 부딪혀 «앱에 붙이는 계측» 말고 방법이 없다.
+    #
+    # 🔴 **기본은 꺼져 있다.** 켜면 요청당 락 4회 + 타임스탬프 6회가 늘고, 그건 재려는 대상과
+    #    같은 자원(GIL)이다. 상시로 두면 안 되는 종류의 계측이라 운영 기본값이 OFF 다.
+    FRAME_PATH_METRICS: bool = False
+    # 구간별로 남기는 표본 수(링). 넘으면 오래된 것부터 덮인다 — p99 는 «최근 N 개» 의 p99 다.
+    FRAME_PATH_SAMPLES: int = 4096
+
+    # GIL 스위치 간격(초). 0 이면 **안 건드린다**(파이썬 기본 0.005).
+    #
+    # 후보 1순위(서비스 경로 GIL, §10-1)를 직접 흔드는 노브다 — 이 값을 바꿔 처리량이
+    # 움직이면 GIL 기여의 증거이고, 안 움직이면 1순위가 지워진다.
+    # ⚠️ 값 자체에 «좋은 값» 은 없다. 팔을 만드는 손잡이지 튜닝 파라미터가 아니다.
+    GIL_SWITCH_INTERVAL: float = 0.0
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
