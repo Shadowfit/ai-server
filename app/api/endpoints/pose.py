@@ -12,8 +12,10 @@ import time
 import cv2
 
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 
 import exercise_pb2
+from app.config import settings
 from app.core.analyzer_registry import get_analyzer
 from app.core.angle_calculator import extract_angles
 from app.core.mediapipe_detector import get_detector, lease_detector
@@ -46,7 +48,15 @@ def _landmarks_to_json(landmarks: list[Landmark]) -> str:
     )
 
 
-@router.post("", response_model=PoseResponse)
+# 응답 생성 방식(팔). `ai-process-ceiling-cause.md` §11 — 기본은 현행(`model`)이다.
+#
+# 🔴 `response_model` 은 **데코레이터 시점에 굳는다.** 그래서 런타임 분기가 아니라 여기서
+#    한 번 고른다 — 기동 후에는 못 바꾼다(판마다 재기동하는 rig 구조와 맞는다).
+_RESPONSE_MODE = settings.RESPONSE_MODE
+_RESPONSE_MODEL = PoseResponse if _RESPONSE_MODE == "model" else None
+
+
+@router.post("", response_model=_RESPONSE_MODEL)
 def detect_pose(req: PoseRequest):
     """반환 시각을 **한 자리에서** 찍기 위한 얇은 껍질.
 
@@ -60,7 +70,16 @@ def detect_pose(req: PoseRequest):
     ⚠️ 계측이 꺼져 있으면 `mark_handler_out()` 은 즉시 반환한다(다른 `mark_*` 와 같다).
     """
     try:
-        return _detect_pose(req)
+        result = _detect_pose(req)
+        if _RESPONSE_MODE == "model":
+            return result
+        # 🔴 여기부터는 **측정용 팔**이다. `model_dump()` 를 핸들러 안에서 부르므로 그 몫이
+        #    루프가 아니라 **이 스레드**에서 나간다 — `post_loop` 가 줄고 `post_app` 이
+        #    그만큼 느는지가 §11 의 검산이다. «비용이 사라진 것» 으로 읽으면 안 된다.
+        payload = result.model_dump(mode="json")
+        if _RESPONSE_MODE == "dict":
+            return payload
+        return JSONResponse(content=payload)
     finally:
         frame_path.mark_handler_out()
 

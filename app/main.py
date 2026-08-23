@@ -116,6 +116,14 @@ if settings.FRAME_PATH_METRICS:
         settings.FRAME_PATH_SAMPLES,
     )
 
+# 응답 생성 방식이 현행이 아니면 **조건에 남긴다**. 조용히 바뀌면 판이 무엇을 잰 건지 모른다.
+if settings.RESPONSE_MODE != "model":
+    logger.warning(
+        "🔬 RESPONSE_MODE=%s — **응답 계약이 현행과 다르다.** 측정용 팔이고, "
+        "이 판의 조건에 반드시 적을 것 (ai-process-ceiling-cause.md §11)",
+        settings.RESPONSE_MODE,
+    )
+
 # GIL 스위치 간격을 바꾼다(후보 1순위 §10-1 을 흔드는 손잡이). 0 이면 안 건드린다.
 if settings.GIL_SWITCH_INTERVAL > 0:
     sys.setswitchinterval(settings.GIL_SWITCH_INTERVAL)

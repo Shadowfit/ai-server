@@ -86,10 +86,41 @@ class Settings(BaseSettings):
     # ⚠️ 값 자체에 «좋은 값» 은 없다. 팔을 만드는 손잡이지 튜닝 파라미터가 아니다.
     GIL_SWITCH_INTERVAL: float = 0.0
 
+    # 응답 생성 방식(팔 손잡이). `ai-process-ceiling-cause.md` §11 이 쓰는 팔이다.
+    #
+    #   model  (기본, 현행)  response_model=PoseResponse  → Pydantic 검증 + 인코딩이 **루프**에서
+    #   dict                 response_model 없음, dict 반환 → 검증이 빠지고 인코딩만 루프에서
+    #   json                 JSONResponse 직접 반환        → 검증·인코딩이 **스레드**로 옮겨간다
+    #
+    # 🔴 **«비용을 없애는» 손잡이가 아니라 «어디서 쓰는지 옮기는» 손잡이다.** dict·json 은
+    #    `model_dump()` 를 핸들러 안에서 부르므로 그 몫이 `post_app` 으로 **옮겨간다** —
+    #    `post_loop` 가 줄고 `post_app` 이 그만큼 느는지가 이 판의 **검산**이다.
+    #
+    # 🔴 **dict·json 은 응답 계약을 바꾼다.** 측정용이지 채택안이 아니다 —
+    #    운영에서 바꾸려면 프론트가 읽는 필드가 같은지부터 따로 확인해야 한다.
+    # ⚠️ 모르는 값이면 기동을 막는다. 오타로 조용히 현행이 되면 팔이 사라진다.
+    RESPONSE_MODE: str = "model"
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
 
 settings = Settings()
+
+
+def _assert_response_mode() -> None:
+    """모르는 `RESPONSE_MODE` 로는 안 뜬다.
+
+    🔴 오타가 조용히 «model»(현행)이 되면 **팔이 사라진 채로 판이 돈다** — 그 판은 세 팔이
+    같은 것을 재고, 표는 정상으로 보인다. 그런 실패는 사후에 안 보이므로 여기서 막는다.
+    """
+    allowed = ("model", "dict", "json")
+    if settings.RESPONSE_MODE not in allowed:
+        raise RuntimeError(
+            f"RESPONSE_MODE 가 {settings.RESPONSE_MODE!r} 다 — {allowed} 중 하나여야 한다"
+        )
+
+
+_assert_response_mode()
 
 
 def _assert_tokens_separated() -> None:
