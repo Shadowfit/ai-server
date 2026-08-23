@@ -27,13 +27,19 @@ def _make_client(capacity: int = 64) -> tuple[TestClient, frame_path.Recorder]:
 
     @router.post("/pose")
     def pose(body: dict) -> dict:                # 동기 핸들러 — threadpool 로 간다
-        frame_path.mark_handler_in()
-        time.sleep(0.002)
-        frame_path.mark_decoded()
-        frame_path.mark_leased()
-        time.sleep(0.002)
-        frame_path.mark_inferred()
-        return {"ok": True}
+        # 🔴 `try/finally` 로 감싸는 것은 **실제 핸들러와 같은 모양이어야** 하기 때문이다
+        #    (`app/api/endpoints/pose.py`). 이걸 안 찍으면 `post_app`·`post_loop` 가 통째로
+        #    비는데, 그게 정확히 #509 였다 — 구간이 늘었는데 픽스처만 옛 표지에 머물렀다.
+        try:
+            frame_path.mark_handler_in()
+            time.sleep(0.002)
+            frame_path.mark_decoded()
+            frame_path.mark_leased()
+            time.sleep(0.002)
+            frame_path.mark_inferred()
+            return {"ok": True}
+        finally:
+            frame_path.mark_handler_out()
 
     @router.post("/pose-early")
     def pose_early(body: dict) -> dict:          # 조기 반환 — 뒷 구간이 안 찍힌다
