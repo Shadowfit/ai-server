@@ -28,6 +28,10 @@ class PoseSkipReason(StrEnum):
     SESSION_NOT_FOUND = "SESSION_NOT_FOUND"
     UNSUPPORTED_EXERCISE = "UNSUPPORTED_EXERCISE"
 
+    # 측정 전용 — 서버가 «일부러 아무 일도 안 한» 팔이다 (`POSE_NULL_HANDLER`).
+    # 🔴 위 셋과 부류가 다르다. 세션도 입력도 멀쩡하고 **서버 설정**이 사유다.
+    NULL_HANDLER = "NULL_HANDLER"
+
 
 class Landmark(BaseModel):
     """MediaPipe 관절 랜드마크."""

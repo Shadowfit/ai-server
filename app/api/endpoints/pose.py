@@ -55,6 +55,10 @@ def _landmarks_to_json(landmarks: list[Landmark]) -> str:
 _RESPONSE_MODE = settings.RESPONSE_MODE
 _RESPONSE_MODEL = PoseResponse if _RESPONSE_MODE == "model" else None
 
+# 널 핸들러 팔. 🔴 기동 시 한 번 굳힌다 — 요청마다 settings 를 읽으면 그 조회 자체가
+# 재려는 구간 안에 들어간다(`_RESPONSE_MODE` 와 같은 이유).
+_NULL_HANDLER = settings.POSE_NULL_HANDLER
+
 
 @router.post("", response_model=_RESPONSE_MODEL)
 def detect_pose(req: PoseRequest):
@@ -70,6 +74,21 @@ def detect_pose(req: PoseRequest):
     ⚠️ 계측이 꺼져 있으면 `mark_handler_out()` 은 즉시 반환한다(다른 `mark_*` 와 같다).
     """
     try:
+        if _NULL_HANDLER:
+            # 🔑 `mark_handler_in()` 은 **찍는다.** 널 팔에서 빼려는 것은 «계산» 이지
+            #    «수신 경로» 가 아니다 — 이 표지가 없으면 `wait`(도착 → 워커에 실림)가
+            #    통째로 사라지는데, 그게 이 팔에서 가장 보고 싶은 값이다(§4 wait 22.0%).
+            frame_path.mark_handler_in()
+            # 🔬 널 핸들러 팔 (`per-process-ceiling-cause.md` 축 3). 본문은 **이미 받았고**
+            #    Pydantic 검증까지 끝났다 — 여기서 끊으면 그 뒤(디코딩·추론·분석·콜백)가
+            #    통째로 빠진다. 「파이썬 계산을 다 빼도 프로세스당 천장이 남는가」가 질문이다.
+            #    ⚠️ `mark_decoded()` 아래 표지는 **안 찍는다** — 안 한 일을 0ms 로 남기면
+            #       구간 표가 「빨랐다」로 읽힌다. 빠진 구간은 비어 있어야 한다.
+            return PoseResponse(
+                success=False,
+                skip_reason=PoseSkipReason.NULL_HANDLER,
+                message="널 핸들러 팔 — 측정용",
+            )
         result = _detect_pose(req)
         if _RESPONSE_MODE == "model":
             return result

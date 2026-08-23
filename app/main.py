@@ -51,10 +51,33 @@ async def lifespan(app: FastAPI):
         )
         logger.warning("🔬 스레드풀·루프 샘플러 ON — 20ms 주기")
 
+    if settings.POSE_NULL_HANDLER:
+        # 🔴 서비스가 아무 일도 안 한다. 조용히 켜져 있으면 「빨라졌다」로 읽힌다.
+        logger.warning("🔬 널 핸들러 팔 ON — POST /pose 가 즉시 반환한다 (측정 전용)")
+
+    # GIL 지연 프로브(축 5). 🔴 **평범한 스레드**여야 한다 — 루프 태스크로 띄우면 루프
+    # 지체와 같은 것을 재게 되어 둘의 차가 사라진다. 그 차가 이 프로브의 전부다.
+    _gil_stop = None
+    if settings.FRAME_PATH_METRICS and settings.GIL_PROBE_INTERVAL > 0:
+        _gil_stop = threading.Event()
+        threading.Thread(
+            target=frame_path.probe_gil,
+            args=(frame_path.get_recorder(), settings.GIL_PROBE_INTERVAL, _gil_stop),
+            name="gil-probe",
+            daemon=True,
+        ).start()
+    elif settings.GIL_PROBE_INTERVAL > 0:
+        # 담을 자리가 없다. 조용히 넘어가면 「GIL 대기 0」 으로 읽힌다.
+        logger.warning(
+            "🔴 GIL_PROBE_INTERVAL 이 켜졌는데 FRAME_PATH_METRICS 가 꺼져 있다 — 프로브 안 뜬다"
+        )
+
     yield
 
     if _pool_task is not None:
         _pool_task.cancel()
+    if _gil_stop is not None:
+        _gil_stop.set()
 
     # 종료 시 gRPC 서버 graceful stop
     stop_grpc_server()
