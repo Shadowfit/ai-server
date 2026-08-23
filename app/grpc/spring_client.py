@@ -30,6 +30,38 @@ _COMPLETE_BACKOFF_SECONDS = (1.0, 3.0)
 
 # SavePoseDataBatch 도 실패하면 rep 하나 분량이 통째로 사라진다 (#188). 값은 위 CompleteAnalysis
 # 계약을 그대로 복제한 것이다 — 유실 빈도가 미측정이라(#151) 새 숫자를 고를 근거가 없다.
+# 🔴 «다시 던져도 되는 실패» 와 «영구 실패» 를 가른다 (#209 · #276 ③).
+#
+# 예전에는 grpc.RpcError 면 무엇이든 3회를 던졌다. 그런데 서버가 상태코드를 안 갈라줘서
+# (전부 INTERNAL) 가를 방법이 없었던 것이기도 하다 — 그 절반이 2026-08-23 에 고쳐졌다.
+# 이제 Spring 은 이렇게 답한다:
+#   ABORTED            = 데드락 재시도 상한 소진. 잠시 뒤면 대개 성공한다 → 던진다
+#   UNAVAILABLE        = 서버가 없거나 내려갔다 → 던진다
+#   DEADLINE_EXCEEDED  = 예산 초과 → 던진다 (상위 예산이 있으면 그쪽이 자른다)
+#   RESOURCE_EXHAUSTED = 지금은 과부하 → 던진다
+#   NOT_FOUND          = 세션이 사라졌다 → **던지지 않는다.** 3회를 더 던져도 사라진 세션은 안 돌아온다
+#   INVALID_ARGUMENT · FAILED_PRECONDITION · PERMISSION_DENIED · UNAUTHENTICATED = 우리 잘못 → 안 던진다
+#
+# 안 던지는 쪽이 중요한 이유: 영구 실패를 3회 던지면 **worst-case 4초 동안 이 워커가 붙잡히고**
+# 그만큼 프레임 유입이 밀린다(아래 report_pose_data_batch 주석의 그 대가다).
+_RETRYABLE_CODES = frozenset(
+    {
+        grpc.StatusCode.ABORTED,
+        grpc.StatusCode.UNAVAILABLE,
+        grpc.StatusCode.DEADLINE_EXCEEDED,
+        grpc.StatusCode.RESOURCE_EXHAUSTED,
+    }
+)
+
+
+def _is_retryable(e: grpc.RpcError) -> bool:
+    """상태코드가 «다시 던져도 되는» 부류인가. 코드를 못 읽으면 보수적으로 재시도한다."""
+    code = e.code() if hasattr(e, "code") else None
+    if code is None:
+        return True
+    return code in _RETRYABLE_CODES
+
+
 _POSE_BATCH_MAX_ATTEMPTS = 3
 _POSE_BATCH_BACKOFF_SECONDS = (1.0, 3.0)
 
@@ -96,6 +128,15 @@ def report_pose_data_batch(
             )
             return
         except grpc.RpcError as e:
+            if not _is_retryable(e):
+                # 영구 실패다 — 더 던져도 결과가 같고, 그동안 이 워커가 붙잡힌다 (#209 · #276 ③).
+                logger.error(
+                    "[AI → Spring] PoseData 배치 거절 (session=%s, code=%s) — 재시도하지 않는다: %s",
+                    session_id,
+                    e.code(),
+                    e.details(),
+                )
+                return
             if attempt == _POSE_BATCH_MAX_ATTEMPTS:
                 logger.error(
                     "[AI → Spring] PoseData 배치 전송 실패 (session=%s, count=%d, %d회 시도): %s",
@@ -149,6 +190,15 @@ def report_complete_analysis(
             )
             return
         except grpc.RpcError as e:
+            if not _is_retryable(e):
+                # 영구 실패다 — 더 던져도 결과가 같고, 그동안 이 워커가 붙잡힌다 (#209 · #276 ③).
+                logger.error(
+                    "[AI → Spring] 분석 완료 콜백 거절 (session=%s, code=%s) — 재시도하지 않는다: %s",
+                    session_id,
+                    e.code(),
+                    e.details(),
+                )
+                return
             if attempt >= _COMPLETE_MAX_ATTEMPTS:
                 logger.error(
                     "[AI → Spring] CompleteAnalysis 최종 실패 (session=%s, attempts=%d): %s",
@@ -192,5 +242,9 @@ def send_reference_poses(
         )
         return response.success
     except grpc.RpcError as e:
-        logger.error("[AI → Spring] 기준 좌표 전송 실패: %s", e.details())
+        # 이 경로는 원래 재시도가 없다. 대신 **상태코드를 남긴다** — 서버가 코드를 갈라주게 된
+        # 뒤로는(#209) 「우리 잘못인가 서버가 아픈가」가 로그 한 줄로 갈린다.
+        logger.error(
+            "[AI → Spring] 기준 좌표 전송 실패 (code=%s): %s", e.code(), e.details()
+        )
         return False
