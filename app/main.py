@@ -5,7 +5,7 @@ import sys
 import threading
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -15,7 +15,7 @@ from app.core.mediapipe_detector import get_detector
 from app.grpc.correlation import install_log_record_factory
 from app.grpc.server import grpc_status, run_grpc_server, stop_grpc_server
 from app.middleware.auth import InternalAuthMiddleware
-from app.observability import frame_path
+from app.observability import frame_path, metrics
 
 # basicConfig 보다 먼저 — 포맷의 %(cid)s 를 채울 속성을 LogRecord 에 주입하는 팩토리를 건다.
 # Spring 로그의 [cid|sessionId] 와 같은 id 라서 두 서비스 로그를 한 줄기로 이어 읽을 수 있다.
@@ -84,6 +84,12 @@ app.add_middleware(InternalAuthMiddleware)
 # 인증 미들웨어보다 **뒤에** add 한다 = 가장 바깥이다. 재려는 것이 «요청이 도착한 순간부터
 # 워커에 실릴 때까지» 라, 인증·CORS 가 무는 시간도 그 구간 안에 들어와야 한다.
 if settings.FRAME_PATH_METRICS:
+    # 살아 있는 세션 수를 «스크레이프 시점에» 읽게 붙인다 (#151). 생성/삭제 자리마다 inc/dec 를
+    # 심는 방식은 한 자리만 빠져도 조용히 어긋난다 — 레지스트리가 진실이다.
+    from app.grpc.session_state import get_registry as _get_registry
+
+    metrics.bind_active_sessions(lambda: _get_registry().active_count())
+
     _recorder = frame_path.install(settings.FRAME_PATH_SAMPLES)
     app.add_middleware(
         frame_path.FramePathMiddleware,
@@ -105,6 +111,20 @@ if settings.GIL_SWITCH_INTERVAL > 0:
     )
 
 app.include_router(api_router)
+
+
+@app.get("/metrics", include_in_schema=False)
+async def prometheus_metrics() -> Response:
+    """Prometheus 스크레이프 엔드포인트 (#151).
+
+    🔴 **`/api/v1` 아래가 아니라 루트에 둔다.** 스크레이프 설정은 인프라가 쥐는 것이라
+    앱의 버전 프리픽스를 따라다니면 안 된다 — Spring 의 관리 포트(`/actuator/prometheus`)와 같은 규약이다.
+
+    인증은 안 건다(`PUBLIC_PATHS`). 안 그러면 Prometheus 가 401 을 받아 **영원히 DOWN 인 타깃**이
+    되는데, 그건 prometheus.yml 이 «관측 스택이 고장난 것처럼 보인다» 고 경고한 바로 그 상태다.
+    지표가 안 새는 근거는 인증이 아니라 **네트워크 경계**다(prod compose 가 이 포트를 호스트에 안 연다).
+    """
+    return Response(content=metrics.render(), media_type=metrics.CONTENT_TYPE)
 
 
 @app.get("/health")

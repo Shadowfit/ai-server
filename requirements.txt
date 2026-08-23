@@ -17,3 +17,7 @@ protobuf==4.25.8
 
 # fastapi.testclient 가 사용. 운영에서도 ai-server 가 외부 호출 시 활용 가능
 httpx==0.28.1
+
+# 관측 스택이 AI 를 긁을 수 있게 (#151). 스냅샷(GET /frame-path)과 달리 이건 **시계열**이다 —
+# 이 이슈가 mysqld_exporter 를 들일 때 쓴 잣대를 AI 에도 같게 적용한 결과다.
+prometheus-client==0.21.1

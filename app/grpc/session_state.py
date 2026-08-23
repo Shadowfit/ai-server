@@ -374,6 +374,11 @@ class SessionStateRegistry:
         with self._lock:
             return self._sessions.get(session_id)
 
+    def active_count(self) -> int:
+        """살아 있는 세션 수 (#151 지표용). Lock 하에 읽는다 — 다른 접근과 같은 규약이다."""
+        with self._lock:
+            return len(self._sessions)
+
     def remove(self, session_id: int, now: float | None = None) -> SessionState | None:
         """상태를 꺼내고, **꺼냈다는 사실**을 보유 기간 동안 남긴다 (#191).
 

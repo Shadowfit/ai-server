@@ -15,6 +15,7 @@ import exercise_pb2
 import exercise_pb2_grpc
 from app.config import settings
 from app.grpc.correlation import correlation_metadata
+from app.observability import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,7 @@ def report_pose_data_batch(
                 response.success,
                 attempt,
             )
+            metrics.record_callback("SavePoseDataBatch", "ok")
             return
         except grpc.RpcError as e:
             if not _is_retryable(e):
@@ -147,6 +149,7 @@ def report_pose_data_batch(
                     e.code(),
                     e.details(),
                 )
+                metrics.record_callback("SavePoseDataBatch", "rejected")
                 return
             if attempt == _POSE_BATCH_MAX_ATTEMPTS:
                 logger.error(
@@ -156,6 +159,9 @@ def report_pose_data_batch(
                     attempt,
                     e.details(),
                 )
+                # 🔴 두 겹(Spring 재시도 + 이 재전송)이 다 소진됐다 = rep 하나가 사라진다 (#151).
+                #    지금까지 이 사건은 ERROR 로그 한 줄로만 남아 «얼마나 자주» 에 답이 없었다.
+                metrics.record_callback("SavePoseDataBatch", "exhausted")
                 return
             backoff = _POSE_BATCH_BACKOFF_SECONDS[attempt - 1]
             logger.warning(
@@ -165,6 +171,7 @@ def report_pose_data_batch(
                 backoff,
                 e.details(),
             )
+            metrics.record_callback("SavePoseDataBatch", "retried")
             time.sleep(backoff)
 
 
@@ -203,6 +210,7 @@ def report_complete_analysis(
                 response.status,
                 attempt,
             )
+            metrics.record_callback("CompleteAnalysis", "ok")
             return
         except grpc.RpcError as e:
             if not _is_retryable(e):
@@ -213,6 +221,7 @@ def report_complete_analysis(
                     e.code(),
                     e.details(),
                 )
+                metrics.record_callback("CompleteAnalysis", "rejected")
                 return
             if attempt >= _COMPLETE_MAX_ATTEMPTS:
                 logger.error(
@@ -221,6 +230,9 @@ def report_complete_analysis(
                     attempt,
                     e.details(),
                 )
+                # 🔴 세션 결과가 영구 유실되는 자리다 — 이 콜백은 세션당 한 번뿐이라
+                #    한 건이 곧 «리포트 하나가 없다» 다 (#151).
+                metrics.record_callback("CompleteAnalysis", "exhausted")
                 return
             wait = _COMPLETE_BACKOFF_SECONDS[attempt - 1]
             logger.warning(
@@ -231,6 +243,7 @@ def report_complete_analysis(
                 _COMPLETE_MAX_ATTEMPTS,
                 e.details(),
             )
+            metrics.record_callback("CompleteAnalysis", "retried")
             time.sleep(wait)
 
 def send_reference_poses(
@@ -259,6 +272,7 @@ def send_reference_poses(
             len(poses),
             response.success,
         )
+        metrics.record_callback("ExtractReferenceData", "ok")
         return response.success
     except grpc.RpcError as e:
         # 이 경로는 원래 재시도가 없다. 대신 **상태코드를 남긴다** — 서버가 코드를 갈라주게 된
@@ -266,4 +280,6 @@ def send_reference_poses(
         logger.error(
             "[AI → Spring] 기준 좌표 전송 실패 (code=%s): %s", e.code(), e.details()
         )
+        # 이 경로는 재시도가 없다 — 실패가 곧 종착이라 outcome 을 exhausted 로 센다.
+        metrics.record_callback("ExtractReferenceData", "exhausted")
         return False

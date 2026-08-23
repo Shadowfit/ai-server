@@ -24,9 +24,14 @@ from starlette.types import ASGIApp
 
 from app.config import settings
 
-# 인증 우회 경로 — 헬스체크, Swagger 문서, OpenAPI 스펙
+# 인증 우회 경로 — 헬스체크, Swagger 문서, OpenAPI 스펙, 그리고 지표(#151)
+#
+# 🔴 /metrics 를 안 열면 Prometheus 가 401 을 받고, 그러면 **영원히 DOWN 인 타깃**이 생긴다 —
+#    prometheus.yml 이 «타깃만 적으면 관측 스택이 고장난 것처럼 보인다» 고 경고한 그 상태다.
+#    지표가 안 새는 근거는 인증이 아니라 **네트워크 경계**다: prod compose 는 AI 포트를 호스트에
+#    매핑하지 않고, 스크레이프는 같은 도커 네트워크 안에서만 풀린다(Spring 의 9090 과 같은 방식).
 PUBLIC_PATHS: frozenset[str] = frozenset(
-    {"/health", "/docs", "/redoc", "/openapi.json"}
+    {"/health", "/metrics", "/docs", "/redoc", "/openapi.json"}
 )
 
 
