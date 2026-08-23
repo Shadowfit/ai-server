@@ -125,7 +125,11 @@ class Recorder:
         self.loop_lag_max_ms = 0.0
         # GIL 지연 프로브 — 「일 없는 스레드」가 깨어나기까지 (후보 ㄱ).
         # `per-process-ceiling-cause.md` 축 5. 루프 지체와의 **차**가 요점이라 따로 담는다.
+        # 🔴 **링이다(먼저 온 것이 아니라 «최근» 을 남긴다).** 프로브는 초당 수백 번
+        #    찍어서 상한을 금방 채운다 — 「먼저 온 N개」로 두면 초기화 직후, 즉
+        #    **워밍업 구간**만 남고 정상 상태가 통째로 빠진다. `seen` 이 총 수다.
         self.gil_lag_ms: list[float] = []
+        self._gil_pos = 0
         self.gil_lag_max_ms = 0.0
         self.gil_samples = 0
         self.gil_interval_ms = 0.0
@@ -155,6 +159,9 @@ class Recorder:
                 self.gil_lag_max_ms = lag_ms
             if len(self.gil_lag_ms) < self._cap:
                 self.gil_lag_ms.append(lag_ms)
+            else:                                   # 링 — 오래된 것부터 덮는다
+                self.gil_lag_ms[self._gil_pos] = lag_ms
+                self._gil_pos = (self._gil_pos + 1) % self._cap
 
     # --- 핫 경로 ---------------------------------------------------------
 
@@ -232,6 +239,9 @@ class Recorder:
         out["gil_lag"] = _describe(gil, gil_seen)
         out["gil_lag"]["max_ms"] = round(gil_max, 3)
         out["gil_lag"]["interval_ms"] = round(gil_iv, 3)
+        # 🔴 `n` 이 상한이면 분위수는 **최근 n개의 창**이지 판 전체가 아니다.
+        #    `seen` 과 다르면 그 사실을 명시한다 — 안 적으면 판 전체로 읽힌다.
+        out["gil_lag"]["windowed"] = gil_seen > len(gil)
         out["spans"] = {s: _describe(rings[s], seen[s]) for s in SPANS}
         return out
 
@@ -254,6 +264,7 @@ class Recorder:
             self.loop_lag_ms = []
             self.loop_lag_max_ms = 0.0
             self.gil_lag_ms = []
+            self._gil_pos = 0
             self.gil_lag_max_ms = 0.0
             self.gil_samples = 0
 
