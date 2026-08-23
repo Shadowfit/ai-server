@@ -55,6 +55,25 @@ logger = logging.getLogger(__name__)
 #
 # ⚠️ `post` 는 **안 지운다** — R10-a 값과 비교가 되어야 하고, `post_app + post_loop = post` 가
 #    그 자체로 검산이다.
+# GIL 지연 히스토그램 경계(ms). 🔴 **바꾸면 과거 판과 비교가 끊긴다.**
+#
+# 🔑 요약값으로 못 하는 계산이 하나 있어서 있다:
+#
+#     P(대기 ≈ 바닥) = P(깰 때 GIL 이 놀고 있었다) = 1 − rho
+#
+# 그 여집합 `rho` 가 **모든 스레드의 GIL 총 점유율**이다. `main` 스레드 CPU 는 루프 몫만
+# 줘서 «하한» 인데, 이 비율은 **워커의 파이썬 몫까지** 포함한다 — `ai-receive-path-scaling.md`
+# §10-1 의 「1코어 상한에 붙었나」에 답하려면 그 총량이 필요하다.
+#
+# ⚠️ **평균으로는 못 한다.** 「대기 ~ uniform(0, switch interval)」 모델은 보유 구간이
+#    양자보다 짧으면 깨진다 — 짧은 파이썬 구간은 선점되기 전에 스스로 GIL 을 놓는다.
+#    비율은 보유 구간 길이와 **무관하게** 성립한다.
+#
+# 🔴 **이 값은 rho 의 «하한» 이다.** 오래 기다린 표본은 그만큼 표본을 적게 낳으므로
+#    (늦게 깨면 그 창의 표본 수가 준다) rho 가 낮게 나온다 —
+#    **높게 나오면 강한 증거, 낮게 나오면 약한 증거**다.
+GIL_BUCKETS_MS = (0.1, 0.15, 0.2, 0.3, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0)
+
 SPANS = (
     "wait", "decode", "lease", "infer",
     "post", "post_app", "post_loop",
@@ -130,6 +149,8 @@ class Recorder:
         #    **워밍업 구간**만 남고 정상 상태가 통째로 빠진다. `seen` 이 총 수다.
         self.gil_lag_ms: list[float] = []
         self._gil_pos = 0
+        # 🔑 히스토그램은 **링이 아니다** — 판 전체를 센다(링은 최근 창만 본다).
+        self.gil_hist = [0] * (len(GIL_BUCKETS_MS) + 1)
         self.gil_lag_max_ms = 0.0
         self.gil_samples = 0
         self.gil_interval_ms = 0.0
@@ -162,6 +183,10 @@ class Recorder:
             else:                                   # 링 — 오래된 것부터 덮는다
                 self.gil_lag_ms[self._gil_pos] = lag_ms
                 self._gil_pos = (self._gil_pos + 1) % self._cap
+            b = 0
+            while b < len(GIL_BUCKETS_MS) and lag_ms > GIL_BUCKETS_MS[b]:
+                b += 1
+            self.gil_hist[b] += 1
 
     # --- 핫 경로 ---------------------------------------------------------
 
@@ -233,6 +258,7 @@ class Recorder:
             gil_max = self.gil_lag_max_ms
             gil_seen = self.gil_samples
             gil_iv = self.gil_interval_ms
+            gil_hist = list(self.gil_hist)
         out["loop_lag"] = _describe(lag, len(lag))
         out["loop_lag"]["max_ms"] = round(lag_max, 3)
         # 🔴 `samples: 0` 이면 **프로브가 안 돈 것**이다 — 「GIL 대기 없음」이 아니다.
@@ -242,6 +268,13 @@ class Recorder:
         # 🔴 `n` 이 상한이면 분위수는 **최근 n개의 창**이지 판 전체가 아니다.
         #    `seen` 과 다르면 그 사실을 명시한다 — 안 적으면 판 전체로 읽힌다.
         out["gil_lag"]["windowed"] = gil_seen > len(gil)
+        # 🔑 히스토그램은 **판 전체**다(링과 달리 창이 아니다). 경계를 같이 낸다 —
+        #    숫자만 남기면 나중에 경계가 바뀌었을 때 조용히 어긋난다.
+        out["gil_lag"]["hist"] = {
+            "edges_ms": list(GIL_BUCKETS_MS),
+            "counts": gil_hist,
+            "total": sum(gil_hist),
+        }
         out["spans"] = {s: _describe(rings[s], seen[s]) for s in SPANS}
         return out
 
@@ -265,6 +298,7 @@ class Recorder:
             self.loop_lag_max_ms = 0.0
             self.gil_lag_ms = []
             self._gil_pos = 0
+            self.gil_hist = [0] * (len(GIL_BUCKETS_MS) + 1)
             self.gil_lag_max_ms = 0.0
             self.gil_samples = 0
 
