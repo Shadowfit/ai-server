@@ -6,13 +6,14 @@ import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.config import settings
 from app.core.mediapipe_detector import get_detector
 from app.grpc.correlation import install_log_record_factory
-from app.grpc.server import run_grpc_server, stop_grpc_server
+from app.grpc.server import grpc_status, run_grpc_server, stop_grpc_server
 from app.middleware.auth import InternalAuthMiddleware
 from app.observability import frame_path
 
@@ -108,4 +109,28 @@ app.include_router(api_router)
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "service": settings.APP_NAME}
+    """gRPC 서버까지 살아 있어야 ok 다 (#430).
+
+    🔴 **예전에는 무조건 ok 였다.** 그런데 gRPC 는 데몬 스레드에서 돌아 **스레드만 죽어도
+    프로세스는 산다** — 그때 컨테이너는 `healthy`, HTTP 는 200, 그런데 Spring 은
+    `Connection refused` 를 받고 세션이 전부 FAILED 로 떨어진다. 겉으로 드러나는 얼굴이
+    원인과 안 닮아서 진단이 오래 걸린다(2026-08-23 에 세 판을 태웠다).
+
+    compose 의 healthcheck 가 이 엔드포인트를 보므로, 503 을 내면 컨테이너가 `unhealthy` 로
+    보인다 — 그게 이 변경이 노리는 전부다.
+
+    ⚠️ **프로세스를 죽이지는 않는다.** `config.py` 의 `_assert_tokens_separated` 가
+    *"로컬·테스트가 토큰 없이 도는 경로가 있다"* 고 적어둔 대로, 그 경로를 깨지 않는다.
+    없애는 것은 «거짓 healthy» 뿐이다.
+
+    ⚠️ 이 검사는 여전히 **얕다** — 검출기 풀은 안 건드린다(#214, `loadtest/aws/bootstrap.sh`).
+    """
+    serving, error = grpc_status()
+    body = {
+        "status": "ok" if serving else "degraded",
+        "service": settings.APP_NAME,
+        "grpc": {"serving": serving, "error": error},
+    }
+    if not serving:
+        return JSONResponse(status_code=503, content=body)
+    return body
