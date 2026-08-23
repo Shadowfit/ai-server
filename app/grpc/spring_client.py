@@ -23,8 +23,15 @@ _stub: exercise_pb2_grpc.ExerciseServiceStub | None = None
 _lock = threading.Lock()
 
 # CompleteAnalysis 콜백이 실패하면 세션 결과가 영구 유실되므로 재시도한다.
-# 3회 시도, 시도 사이 1s → 3s 백오프 (총 worst-case 4초). 최종 실패 시
-# ERROR 로그만 남기고 포기 — 장기 장애 복구는 별도 영구 큐가 필요하다.
+# 3회 시도, 시도 사이 1s → 3s 백오프. 최종 실패 시 ERROR 로그만 남기고 포기 —
+# 장기 장애 복구는 별도 영구 큐가 필요하다.
+#
+# 🔴 2026-08-23 정정: 여기 「총 worst-case 4초」라고 적혀 있었는데 **그건 틀린 계산이었다**
+#    (#206 결함 A). 호출에 timeout 이 없어 grpc-python 기본값이 None(무한 대기)이었으므로,
+#    Spring 이 hang 하면 첫 시도가 영영 안 끝나고 **재시도 루프는 한 번도 안 돈다.**
+#    「결과가 영구 유실되므로 재시도한다」가 정작 그 유실 시나리오에서 발동하지 않는 구조였다.
+#    이제 호출마다 데드라인을 건다(settings.BACKEND_GRPC_TIMEOUT_SECONDS, 기본 5초).
+#    그래서 실제 상한은 **3 × 데드라인 + 백오프 4초 = 최대 19초**다 — 4초가 아니다.
 _COMPLETE_MAX_ATTEMPTS = 3
 _COMPLETE_BACKOFF_SECONDS = (1.0, 3.0)
 
@@ -118,7 +125,11 @@ def report_pose_data_batch(
 
     for attempt in range(1, _POSE_BATCH_MAX_ATTEMPTS + 1):
         try:
-            response = get_stub().SavePoseDataBatch(request, metadata=metadata)
+            response = get_stub().SavePoseDataBatch(
+                request,
+                metadata=metadata,
+                timeout=settings.BACKEND_GRPC_TIMEOUT_SECONDS,
+            )
             logger.info(
                 "[AI → Spring] PoseData 배치 전송 (session=%s, count=%d, success=%s, attempt=%d)",
                 session_id,
@@ -181,7 +192,11 @@ def report_complete_analysis(
 
     for attempt in range(1, _COMPLETE_MAX_ATTEMPTS + 1):
         try:
-            response = get_stub().CompleteAnalysis(request, metadata=metadata)
+            response = get_stub().CompleteAnalysis(
+                request,
+                metadata=metadata,
+                timeout=settings.BACKEND_GRPC_TIMEOUT_SECONDS,
+            )
             logger.info(
                 "[AI → Spring] CompleteAnalysis 성공 (session=%s, status=%s, attempt=%d)",
                 session_id,
@@ -233,7 +248,11 @@ def send_reference_poses(
             exercise_id=exercise_id,
             extracted_poses=poses,
         )
-        response = get_stub().ExtractReferenceData(request, metadata=call_metadata())
+        response = get_stub().ExtractReferenceData(
+            request,
+            metadata=call_metadata(),
+            timeout=settings.BACKEND_GRPC_TIMEOUT_SECONDS,
+        )
         logger.info(
             "[AI → Spring] 기준 좌표 전송 (exercise=%s, count=%d, success=%s)",
             exercise_id,

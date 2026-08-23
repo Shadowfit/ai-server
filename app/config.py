@@ -49,6 +49,18 @@ class Settings(BaseSettings):
 
     # Spring gRPC 서버 주소 (콜백 대상)
     BACKEND_GRPC_ADDRESS: str = "shadowfit-backend:6565"
+    # 🔴 AI → Spring 호출의 데드라인(초). #206 결함 A — 이 값이 없던 동안 grpc-python 의
+    #    기본값은 None(**무한 대기**)이었고, 그래서 「3회 시도 · worst-case 4초」라는 재시도
+    #    계약이 성립하지 않았다: Spring 이 hang 하면 첫 시도가 영영 안 끝나 루프가 한 번도 안 돈다.
+    #
+    #    값 5초는 **새로 고른 숫자가 아니다** — 반대 방향(Spring → AI)이 같은 이유로 쓰는 값을
+    #    그대로 복제한다(ExerciseAnalysisService.GRPC_CALL_TIMEOUT_SECONDS, "실측 튜닝된 값이
+    #    아닌 보수적 기본값"). spring_client 가 재시도 횟수를 정할 때 쓴 방식과 같다.
+    #
+    #    ⚠️ 이건 «지연 예산» 이 아니라 **«hang 을 잡는 그물»** 이다. 앱 경로 실측에서 관측된
+    #    p95 는 동거 조건에서 213ms 였다(loadtest/results/r276-backoff-sweep-aws-2026-08-23) —
+    #    5초는 그 20배가 넘는다. 예산으로 쓰려면 따로 재고 따로 정해야 한다.
+    BACKEND_GRPC_TIMEOUT_SECONDS: float = 5.0
 
     # FastAPI gRPC 서버 포트
     AI_GRPC_PORT: int = 8585
