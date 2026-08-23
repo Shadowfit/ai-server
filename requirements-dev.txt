@@ -1,0 +1,9 @@
+# 테스트 전용 의존성. **운영 이미지에는 안 들어간다** — Dockerfile 은 requirements.txt 만 설치한다.
+#
+# 왜 pytest 인가 (#465): CI 가 `python -m unittest discover` 로 돌던 동안, `unittest.TestCase`
+# 하위 클래스가 아닌 **평범한 `def test_...` 함수 47판이 import 만 되고 실행되지 않았다.**
+# 그중 8판이 #134(앱 번들 토큰으로 내부 gRPC 통과) 회귀를 막는 test_auth_middleware.py 였다.
+# pytest 는 두 형태를 **모두** 걷으므로, 테스트를 한 판도 고쳐 쓰지 않고 47판이 살아난다.
+-r requirements.txt
+
+pytest==9.1.1
