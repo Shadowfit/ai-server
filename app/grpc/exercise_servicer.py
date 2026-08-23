@@ -381,7 +381,7 @@ class ExerciseServicer(exercise_pb2_grpc.ExerciseServiceServicer):
                 (
                     " 🔴 한 프레임도 판정되지 않았다"
                     " (수락까지 0 이면 사람을 못 찾은 것이다 — NO_POSE 는 이 숫자에 안 잡힌다)"
-                    if judged <= 0
+                    if state.judged_frame_count <= 0
                     else ""
                 ),
             )
