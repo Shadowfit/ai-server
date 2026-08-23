@@ -1,5 +1,6 @@
 """ShadowFit AI Server — FastAPI 진입점."""
 
+import asyncio
 import logging
 import sys
 import threading
@@ -40,7 +41,20 @@ async def lifespan(app: FastAPI):
     grpc_thread.start()
     logger.info("gRPC 서버 백그라운드 스레드 시작")
 
+    # 스레드풀 상한·이벤트 루프 지체 샘플러. 🔴 limiter 는 RunVar 라 **루프 안에서** 띄워야
+    # 같은 객체를 본다 — 그래서 여기다(모듈 최상단이 아니라).
+    _pool_task = None
+    if settings.FRAME_PATH_METRICS:
+        _pool_task = asyncio.create_task(
+            frame_path.sample_pool(frame_path.get_recorder()),
+            name="frame-path-pool-sampler",
+        )
+        logger.warning("🔬 스레드풀·루프 샘플러 ON — 20ms 주기")
+
     yield
+
+    if _pool_task is not None:
+        _pool_task.cancel()
 
     # 종료 시 gRPC 서버 graceful stop
     stop_grpc_server()

@@ -24,6 +24,7 @@ GIL 자체를 흔드는 노브(`sys.setswitchinterval`)는 여기 없다 — 기
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import logging
 import threading
@@ -44,7 +45,21 @@ logger = logging.getLogger(__name__)
 #   post     추론 완료 → 응답 시작      분석·직렬화·Spring gRPC 콜백
 #   respond  응답 시작 → ASGI 이탈      응답 전송
 #   total    ASGI 진입 → ASGI 이탈
-SPANS = ("wait", "decode", "lease", "infer", "post", "respond", "total")
+#
+# 🔑 `post` 는 **섞인 통**이다 — 앱 후처리(스레드 안)와 FastAPI 응답 직렬화(**이벤트 루프**)가
+#    한 칸에 들어 있다. 그래서 후보 ㄴ(단일 이벤트 루프)과 ㄷ(스레드풀 상한)이 안 갈렸다
+#    (`ai-process-ceiling-cause.md` §2-4). 아래 둘로 가른다:
+#
+#   post_app   추론 완료 → 핸들러 반환   앱 후처리 (**스레드가 잡고 있는 구간**)
+#   post_loop  핸들러 반환 → 응답 시작   스레드 반납 후 **이벤트 루프**가 쓴 시간
+#
+# ⚠️ `post` 는 **안 지운다** — R10-a 값과 비교가 되어야 하고, `post_app + post_loop = post` 가
+#    그 자체로 검산이다.
+SPANS = (
+    "wait", "decode", "lease", "infer",
+    "post", "post_app", "post_loop",
+    "respond", "total",
+)
 
 
 @dataclass
@@ -58,6 +73,8 @@ class FrameTrace:
     t_decoded: float | None = None
     t_leased: float | None = None
     t_inferred: float | None = None
+    # 핸들러가 값을 돌려준 시각. 🔴 **여기서 스레드가 반납된다** — 이 뒤는 이벤트 루프다.
+    t_handler_out: float | None = None
     t_response: float | None = None
     t_asgi_out: float | None = None
 
@@ -89,6 +106,39 @@ class Recorder:
         # 핸들러 진입 시점의 동시 처리 수 분포. **이게 「~9」를 대체하는 직접 값이다** —
         # 최대값 하나로는 «가끔 9» 와 «내내 9» 가 구분되지 않는다.
         self.handler_concurrency: dict[int, int] = {}
+
+        # ── 스레드풀·이벤트 루프 관측 (샘플러가 채운다, 핫 경로 아님) ────────
+        #
+        # 🔑 후보 ㄷ(스레드풀 상한)을 **직접** 본다. `inflight_handler` 로는 못 본다 —
+        #    그 카운터는 `http.response.start` 까지 세므로 **스레드를 반납한 요청도 포함**한다
+        #    (`ai-process-ceiling-cause.md` §2-2).
+        # ⚠️ **최대와 분포를 남긴다.** 0단계 프로브에서 대기가 p50 0 · 최대 39 로 오갔다 —
+        #    중앙값만 보면 「대기 없음」으로 읽힌다(그 결과 §2).
+        self.pool_total = 0            # limiter 상한 (anyio 기본 40)
+        self.pool_waiting_max = 0
+        self.pool_borrowed_max = 0
+        self.pool_waiting: dict[int, int] = {}    # tasks_waiting 분포
+        self.pool_borrowed: dict[int, int] = {}   # borrowed_tokens 분포
+        self.pool_samples = 0
+        # 이벤트 루프 지체 — 샘플러가 「자기가 늦게 깬 만큼」을 잰다(후보 ㄴ 보강).
+        self.loop_lag_ms: list[float] = []
+        self.loop_lag_max_ms = 0.0
+
+    def record_pool(self, total: int, borrowed: int, waiting: int, lag_ms: float) -> None:
+        """샘플러 전용. 요청 경로가 아니라 **주기 태스크**가 부른다."""
+        with self._lock:
+            self.pool_total = total
+            self.pool_samples += 1
+            if waiting > self.pool_waiting_max:
+                self.pool_waiting_max = waiting
+            if borrowed > self.pool_borrowed_max:
+                self.pool_borrowed_max = borrowed
+            self.pool_waiting[waiting] = self.pool_waiting.get(waiting, 0) + 1
+            self.pool_borrowed[borrowed] = self.pool_borrowed.get(borrowed, 0) + 1
+            if lag_ms > self.loop_lag_max_ms:
+                self.loop_lag_max_ms = lag_ms
+            if len(self.loop_lag_ms) < self._cap:
+                self.loop_lag_ms.append(lag_ms)
 
     # --- 핫 경로 ---------------------------------------------------------
 
@@ -143,7 +193,21 @@ class Recorder:
                 "inflight_handler_max": self.inflight_handler_max,
                 "handler_concurrency": dict(sorted(self.handler_concurrency.items())),
                 "sample_capacity": self._cap,
+                # 🔑 ㄷ(스레드풀 상한)을 직접 답하는 칸이다. `waiting_max` 가 0 이면
+                #    상한은 안 걸려 있었고, 그러면 `wait` 은 전부 루프 디스패치다.
+                "thread_pool": {
+                    "total_tokens": self.pool_total,
+                    "waiting_max": self.pool_waiting_max,
+                    "borrowed_max": self.pool_borrowed_max,
+                    "waiting": dict(sorted(self.pool_waiting.items())),
+                    "borrowed": dict(sorted(self.pool_borrowed.items())),
+                    "samples": self.pool_samples,
+                },
             }
+            lag = list(self.loop_lag_ms)
+            lag_max = self.loop_lag_max_ms
+        out["loop_lag"] = _describe(lag, len(lag))
+        out["loop_lag"]["max_ms"] = round(lag_max, 3)
         out["spans"] = {s: _describe(rings[s], seen[s]) for s in SPANS}
         return out
 
@@ -158,6 +222,13 @@ class Recorder:
             self.inflight_http_max = self.inflight_http
             self.inflight_handler_max = self.inflight_handler
             self.handler_concurrency = {}
+            self.pool_waiting_max = 0
+            self.pool_borrowed_max = 0
+            self.pool_waiting = {}
+            self.pool_borrowed = {}
+            self.pool_samples = 0
+            self.loop_lag_ms = []
+            self.loop_lag_max_ms = 0.0
 
 
 def _spans_of(tr: FrameTrace) -> dict[str, float]:
@@ -168,6 +239,8 @@ def _spans_of(tr: FrameTrace) -> dict[str, float]:
         ("lease", tr.t_decoded, tr.t_leased),
         ("infer", tr.t_leased, tr.t_inferred),
         ("post", tr.t_inferred, tr.t_response),
+        ("post_app", tr.t_inferred, tr.t_handler_out),
+        ("post_loop", tr.t_handler_out, tr.t_response),
         ("respond", tr.t_response, tr.t_asgi_out),
         ("total", tr.t_asgi_in, tr.t_asgi_out),
     )
@@ -233,6 +306,16 @@ def mark_handler_in() -> None:
     rec = _recorder
     if rec is not None:
         rec.enter_handler()
+
+
+def mark_handler_out() -> None:
+    """핸들러가 값을 돌려준 직후. **여기서 스레드가 반납되고 이후는 이벤트 루프다.**
+
+    🔴 예외로 끝나도 찍혀야 짝이 맞는다 — 호출부가 `try/finally` 로 감싼다.
+    """
+    tr = _current.get()
+    if tr is not None:
+        tr.t_handler_out = time.perf_counter()
 
 
 def mark_decoded() -> None:
@@ -302,6 +385,32 @@ class FramePathMiddleware:
 #
 # `/pose` 와 같은 인증(InternalAuthMiddleware)을 탄다. 공개 경로에 넣지 않는다 — 세션 수와
 # 지연 분포는 운영 정보다.
+
+async def sample_pool(recorder: Recorder, interval: float = 0.02) -> None:
+    """스레드풀 상한과 이벤트 루프 지체를 주기로 걷는다. **루프 안에서만 돈다.**
+
+    🔴 limiter 는 `RunVar` 라 이벤트 루프 밖에서 읽으면 다른 객체가 나온다. 그래서 이 함수는
+       `asyncio.create_task` 로만 띄운다(`main.py` lifespan).
+
+    🔑 한 태스크가 둘을 잰다 — 어차피 `sleep` 하므로 **자기가 늦게 깬 만큼**이 곧 루프 지체다.
+       재려고 따로 도는 것이 없어서 관측 비용이 하나로 묶인다.
+    """
+    import anyio.to_thread
+
+    limiter = anyio.to_thread.current_default_thread_limiter()
+    loop = asyncio.get_running_loop()
+    while True:
+        before = loop.time()
+        await asyncio.sleep(interval)
+        lag_ms = max(0.0, (loop.time() - before - interval) * 1000.0)
+        st = limiter.statistics()
+        recorder.record_pool(
+            int(limiter.total_tokens),
+            int(st.borrowed_tokens),
+            int(st.tasks_waiting),
+            lag_ms,
+        )
+
 
 router = APIRouter(prefix="/diag", tags=["진단"])
 

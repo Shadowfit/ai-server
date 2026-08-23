@@ -48,6 +48,24 @@ def _landmarks_to_json(landmarks: list[Landmark]) -> str:
 
 @router.post("", response_model=PoseResponse)
 def detect_pose(req: PoseRequest):
+    """반환 시각을 **한 자리에서** 찍기 위한 얇은 껍질.
+
+    🔑 여기서 값을 돌려주는 순간 **threadpool 스레드가 반납되고, 그 뒤는 이벤트 루프**다
+    (FastAPI 의 응답 직렬화). 그 경계를 안 찍으면 `post` 가 «앱 후처리» 와 «루프 직렬화» 를
+    한 칸에 담아, 후보 ㄴ(단일 이벤트 루프)과 ㄷ(스레드풀 상한)이 안 갈린다
+    (`docs/decisions/ai-process-ceiling-cause.md` §2-4).
+
+    🔴 `try/finally` 인 이유 — 본문에 return 이 넷이고 예외 경로도 있다. 어느 쪽으로 끝나도
+    스레드는 반납되므로 **짝이 맞아야 한다.**
+    ⚠️ 계측이 꺼져 있으면 `mark_handler_out()` 은 즉시 반환한다(다른 `mark_*` 와 같다).
+    """
+    try:
+        return _detect_pose(req)
+    finally:
+        frame_path.mark_handler_out()
+
+
+def _detect_pose(req: PoseRequest):
     """Base64 이미지 → 관절 감지 + (선택) 세션 누적 분석.
 
     MediaPipe 추론, OpenCV 변환, Spring 콜백 gRPC가 모두 동기 블로킹이라
