@@ -97,17 +97,25 @@ async def lifespan(app: FastAPI):
         logger.info("검출기 풀 정리 생략: %s", e)
 
 
+# DEBUG=false 는 두 compose 파일(dev·prod) 모두의 기본값이다 — 즉 컨테이너로 뜨는 이상
+# 항상 꺼진다. venv로 직접 띄우는 로컬 개발(.env, DEBUG=true)에서만 열린다.
 app = FastAPI(
     title=settings.APP_NAME,
     version="1.0.0",
     description="MediaPipe 포즈 감지, DTW 동기화율 계산, 영상 전처리 API",
     lifespan=lifespan,
+    docs_url="/docs" if settings.DEBUG else None,
+    redoc_url="/redoc" if settings.DEBUG else None,
+    openapi_url="/openapi.json" if settings.DEBUG else None,
 )
 
+# allow_credentials 는 쿠키/TLS 클라이언트 인증서 전용이다 — 인증은 Bearer 토큰
+# (InternalAuthMiddleware) 하나뿐이고 이 코드베이스 어디도 쿠키를 안 쓴다. True로 두면
+# allow_origins=["*"] 와 조합될 때 Starlette이 요청의 Origin을 그대로 반사(reflect)해
+# "자격증명 포함 요청을 아무 오리진에서나 허용"이 된다 — 필요 없는 값이라 뺀다.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

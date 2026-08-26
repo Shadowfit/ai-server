@@ -46,7 +46,17 @@ class Landmark(BaseModel):
 class PoseRequest(BaseModel):
     """실시간 포즈 감지 요청."""
 
-    image: str = Field(description="Base64 인코딩된 이미지")
+    # max_length 근거: **실측이 아니라 안전판**이다(잰 값이 아니라 정한 값 —
+    # [[feedback_no_arbitrary_threshold_values]] 적용). 프론트가 quality=0.4 로 압축해
+    # 보내므로(exercise.tsx:194) 실사용 크기는 이보다 훨씬 작을 것으로 예상되지만, 실제
+    # 디바이스 촬영본의 크기 분포를 잰 적이 없어 "전형적 크기"로 좁히지 않는다. 대신
+    # "정상적인 단일 프레임 JPEG이라면 절대 안 넘을 상한"만 건다 — 20,000,000자
+    # (base64 디코드 시 원본 ≈15MB) 는 어떤 폰 카메라의 원본 해상도·품질에서도 단일
+    # 프레임이 도달하기 어려운 크기고, 이 상한이 막으려는 것은 «크게 찍힌 사진»이 아니라
+    # AI_PUBLIC_TOKEN(앱 번들에서 추출 가능, ai-auth-token-flow.md)만 있으면 누구나 반복
+    # 전송할 수 있는 임의 크기 페이로드다. 이전에는 이 필드에 상한이 전혀 없었고, nginx-ai
+    # 의 기본 1MB 캡도 dev 한정(prod는 #552로 nginx-ai 자체가 없어 무제한이었다).
+    image: str = Field(max_length=20_000_000, description="Base64 인코딩된 이미지")
     exercise_type: str = Field(
         default="squat", description="운동 유형 (squat, deadlift, pullup)"
     )
