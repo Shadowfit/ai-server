@@ -5,11 +5,15 @@ ExerciseServicer가 rep 완성·세션 종료 시점에 호출한다.
 
 from __future__ import annotations
 
+import enum
 import logging
 import threading
 import time
+from datetime import datetime
+from typing import NamedTuple
 
 import grpc
+from google.protobuf.timestamp_pb2 import Timestamp
 
 import exercise_pb2
 import exercise_pb2_grpc
@@ -245,6 +249,107 @@ def report_complete_analysis(
             )
             metrics.record_callback("CompleteAnalysis", "retried")
             time.sleep(wait)
+
+class PendingFeedbackEvent(NamedTuple):
+    """아직 Spring 에 확인받지 못한 피드백 사건 하나 — 분류기(미구현)가 만들어 버퍼에 쌓는다.
+
+    이름을 `exercise_pb2.FeedbackEvent` 와 다르게 둔 이유는 이게 **와이어 메시지가 아니라
+    AI 쪽 버퍼 원소**이기 때문이다(docs/decisions/feedback-batch-retransmission.md 축 A-2).
+    """
+
+    feedback_type: str  # 8종 중 하나 (KNEE_OUT 등) — 아직 분류기가 없어 값 집합은 미정
+    rep_number: int  # 1-based. 멱등키의 일부다(#193 ②)
+    sync_rate_at_trigger: float = 0.0
+    occurred_at: datetime | None = None  # None 이면 전송 시각으로 채운다(표시용, 멱등키 아님)
+
+
+class FeedbackBatchOutcome(enum.Enum):
+    """gRPC 상태코드를 «버퍼를 어떻게 할지» 로 좁힌 것 (위 문서 축 C 표 그대로).
+
+    이 함수는 재시도를 하지 않는다 — 실시간 프레임 경로 안에서 도는 호출이라 여기서 블로킹
+    재시도(report_pose_data_batch 와 같은 방식)를 넣으면 그만큼 추론이 밀린다. 재시도는
+    호출자(분류기·버퍼, 아직 미구현)가 이 outcome 을 보고 다음 세트 경계에서 하기로 설계돼
+    있다(축 B-2, 미결정 — 사용자 confirm 전까지는 이 함수만 있고 아무도 안 부른다).
+    """
+
+    OK = "ok"
+    SESSION_GONE = "session_gone"  # NOT_FOUND — 버퍼를 버려도 된다. 재시도해도 안 돌아온다
+    INVALID = "invalid"  # INVALID_ARGUMENT — 우리 쪽 값 오류. 재시도로 안 고쳐진다
+    TRANSIENT = "transient"  # 그 외 전부(UNAVAILABLE·DEADLINE_EXCEEDED·INTERNAL...) — 버퍼 유지
+
+
+def report_feedback_batch(
+    session_id: int, set_no: int, is_final: bool, events: list[PendingFeedbackEvent]
+) -> tuple[FeedbackBatchOutcome, int]:
+    """자세 결함 판정 batch 를 Spring 에 보낸다 (`ReportFeedbackBatch`, #193).
+
+    🔴 **아직 아무도 안 부른다.** 분류 로직(어느 프레임에서 무슨 결함을 판정할지)이 없어서다
+    (docs/tasks/30-ai-remaining-work.md §1). 이 함수는 proto·Spring 수신부는 이미 있는데
+    AI 쪽 송신 호출 자체가 없던 그 절반만 채운다 — 분류기는 별도 작업이다.
+
+    재시도가 없는 이유·«실패 판정 뒤 무엇을 할지» 는 {@link FeedbackBatchOutcome} 참고.
+    호출자는 반환된 outcome 으로 버퍼를 비울지/버릴지/유지할지 정한다 — 그 정책 자체
+    (A-2+B-2 채택 여부, 「그 외」 outcome 의 재시도 상한 등)는 여전히 미결정이다
+    (feedback-batch-retransmission.md 열린 질문 1·5).
+    """
+    proto_events = []
+    for e in events:
+        occurred_at = Timestamp()
+        if e.occurred_at is not None:
+            occurred_at.FromDatetime(e.occurred_at)
+        else:
+            occurred_at.GetCurrentTime()
+        proto_events.append(
+            exercise_pb2.FeedbackEvent(
+                feedback_type=e.feedback_type,
+                sync_rate_at_trigger=e.sync_rate_at_trigger,
+                occurred_at=occurred_at,
+                rep_number=e.rep_number,
+            )
+        )
+
+    request = exercise_pb2.FeedbackBatchRequest(
+        session_id=session_id,
+        set_no=set_no,
+        is_final=is_final,
+        events=proto_events,
+    )
+
+    try:
+        response = get_stub().ReportFeedbackBatch(
+            request,
+            metadata=call_metadata(),
+            timeout=settings.BACKEND_GRPC_TIMEOUT_SECONDS,
+        )
+        logger.info(
+            "[AI → Spring] 피드백 배치 전송 (session=%s, set=%d, final=%s, sent=%d, saved=%d)",
+            session_id,
+            set_no,
+            is_final,
+            len(events),
+            response.saved_count,
+        )
+        metrics.record_callback("ReportFeedbackBatch", "ok")
+        return FeedbackBatchOutcome.OK, response.saved_count
+    except grpc.RpcError as e:
+        code = e.code() if hasattr(e, "code") else None
+        if code == grpc.StatusCode.NOT_FOUND:
+            outcome = FeedbackBatchOutcome.SESSION_GONE
+        elif code == grpc.StatusCode.INVALID_ARGUMENT:
+            outcome = FeedbackBatchOutcome.INVALID
+        else:
+            outcome = FeedbackBatchOutcome.TRANSIENT
+        logger.warning(
+            "[AI → Spring] 피드백 배치 전송 실패 (session=%s, set=%d, code=%s, outcome=%s): %s",
+            session_id,
+            set_no,
+            code,
+            outcome.value,
+            e.details(),
+        )
+        metrics.record_callback("ReportFeedbackBatch", outcome.value)
+        return outcome, 0
+
 
 def send_reference_poses(
     exercise_id: int, poses: list[exercise_pb2.PoseDataRequest]
