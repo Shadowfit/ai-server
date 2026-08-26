@@ -6,14 +6,14 @@ import sys
 import threading
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.config import settings
 from app.core.mediapipe_detector import get_detector
-from app.grpc.correlation import install_log_record_factory
+from app.grpc.correlation import CorrelationHttpMiddleware, install_log_record_factory
 from app.grpc.server import grpc_status, run_grpc_server, stop_grpc_server
 from app.middleware.auth import InternalAuthMiddleware
 from app.observability import frame_path, metrics
@@ -147,6 +147,11 @@ if settings.FRAME_PATH_METRICS:
         settings.FRAME_PATH_SAMPLES,
     )
 
+# 가장 바깥(모든 미들웨어 앞) — 이 뒤로 도는 모든 로그가 cid 를 갖게 하려면 그중 가장
+# 먼저 실행돼야 한다. 프론트 → AI 직결(H2)이라 Spring 이 물려줄 id 가 없어 여기서 새로
+# 발급한다 (gRPC 쪽은 CorrelationServerInterceptor 가 같은 역할).
+app.add_middleware(CorrelationHttpMiddleware)
+
 # 응답 생성 방식이 현행이 아니면 **조건에 남긴다**. 조용히 바뀌면 판이 무엇을 잰 건지 모른다.
 if settings.RESPONSE_MODE != "model":
     logger.warning(
@@ -164,6 +169,21 @@ if settings.GIL_SWITCH_INTERVAL > 0:
     )
 
 app.include_router(api_router)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """미처리 예외(버그) 전용 — 도메인 스킵 사유(`PoseResponse.skip_reason`)와 다른 부류다.
+
+    이게 없으면 FastAPI 기본 500 핸들러로 떨어져 이 저장소의 correlation id 로깅 규약
+    (`install_log_record_factory`, `%(cid)s`) 밖으로 샌다 — 정상·의도된 스킵 경로는 전부
+    이 규약을 지키는데 «진짜 버그» 경로만 추적이 안 되는 셈이었다.
+
+    `PoseResponse` 로 감싸지 않는다 — `skip_reason` enum(#267)은 «요청·세션이 이상하다»는
+    정상 분류이지 «서버가 죽었다»가 아니다. 같은 모양에 욱여넣으면 그 구분이 무너진다.
+    """
+    logger.exception("미처리 예외 - %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"success": False, "error": "internal_error"})
 
 
 @app.get("/metrics", include_in_schema=False)

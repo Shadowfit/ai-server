@@ -126,6 +126,36 @@ class CorrelationServerInterceptor(grpc.ServerInterceptor):
         )
 
 
+class CorrelationHttpMiddleware:
+    """[프론트 → AI 직결, 분기 H2] HTTP 프레임 경로(`/pose` 등) 전용.
+
+    이 경로엔 Spring 이 없어 물려받을 correlation id 가 없다 — gRPC 쪽처럼 metadata 에서
+    꺼내는 게 아니라 요청마다 새로 발급한다. 없으면 이 경로의 모든 로그(정상·예외 가리지
+    않고)가 `install_log_record_factory` 의 `%(cid)s` 자리에 fallback(`·`)만 남긴다.
+
+    순수 ASGI로 쓴다 — `BaseHTTPMiddleware` 는 요청마다 태스크·메모리스트림을 하나씩 더
+    만든다(`frame_path.FramePathMiddleware` 와 같은 이유로 피한다).
+
+    🔴 **`finally: reset()` 을 안 쓴다 — 썼다가 예외 로깅이 다시 `cid=·` 로 샜다.** Starlette
+    은 `@app.exception_handler(Exception)` 을 `ServerErrorMiddleware` 로 등록하는데, 그건
+    `build_middleware_stack()` 에서 **모든 `add_middleware` 미들웨어의 바깥**에 온다 — 즉 이
+    미들웨어가 그 안쪽이다. 예외가 여기를 통과해 올라가는 동안 `finally` 가 먼저 돌아 예외
+    핸들러가 실행되기 **전에** 컨텍스트를 지워버린다. 리셋을 빼도 새지 않는 이유는 요청마다
+    ASGI 서버가 **새 태스크**를 만들고, 그 태스크의 컨텍스트는 이 요청 안에서만 산다 — 다음
+    요청은 별도 태스크·별도 컨텍스트 사본이라 여기서 세팅한 값이 넘어가지 않는다.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        _correlation_id.set(new_correlation_id("ai-http"))
+        await self.app(scope, receive, send)
+
+
 def install_log_record_factory() -> None:
     """모든 LogRecord 에 `cid` 속성을 주입한다.
 

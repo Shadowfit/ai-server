@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     #    한도도 없고 설정도 없으면 **기동을 거부한다.**
     POSE_DETECTOR_POOL_SIZE: int = 0
 
+    # 프로세스 워커 수 (2026-08-26, GIL 병목 회피로 프로세스 분리 도입).
+    #
+    # 🔴 memory_ceiling() 이 컨테이너 메모리 한도를 «내가 유일한 프로세스» 라고 가정하고
+    #    계산하던 문제(실측: 워커 3개 x POSE_DETECTOR_POOL_SIZE=160 = 약 47.4GB 시도,
+    #    한도 20GB의 2.4배 오버부킹)를 막으려고 추가한다. entrypoint.sh 가 띄우는
+    #    워커 수와 반드시 같은 값을 줘야 한다 — 어긋나면 이 계산 자체가 무의미해진다.
+    AI_WORKER_COUNT: int = 1
+
     # DTW 설정
     DTW_WINDOW_SIZE: int = 10  # Sakoe-Chiba band 크기
 

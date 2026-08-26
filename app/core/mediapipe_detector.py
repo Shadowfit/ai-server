@@ -172,11 +172,17 @@ def memory_ceiling() -> int | None:
     ⚠️ 검출기«만» 계산한다. 프레임 버퍼·base64 임시·파이썬 힙·gRPC 는 **미측정**이라 안 뺐다.
        그러니 컨테이너 한도 자체에 여유를 두라 — 여기서 임의의 «여유분» 을 빼면 그게 또
        근거 없는 기준값이 된다.
+
+    🔴 컨테이너 한도는 «이 프로세스 혼자 쓰는 몫» 이 아니다(2026-08-26). 워커를 여러 개
+       띄우면(AI_WORKER_COUNT) 각 프로세스가 독립적으로 이 계산을 하므로, 나누지 않으면
+       프로세스 수만큼 오버부킹된다 — 실측: 워커 3개 x 160개 시도 시 약 47.4GB, 한도
+       20GB의 2.4배. 프로세스당 몫 = 한도 / AI_WORKER_COUNT 로 나눈다.
     """
     limit = _cgroup_memory_limit_mb()
     if limit is None:
         return None
-    return max(1, int((limit - _BASE_RSS_MB) / _PER_DETECTOR_MB))
+    per_worker_limit = limit / max(1, settings.AI_WORKER_COUNT)
+    return max(1, int((per_worker_limit - _BASE_RSS_MB) / _PER_DETECTOR_MB))
 
 
 class _Lease:
