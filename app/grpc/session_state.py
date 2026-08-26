@@ -144,6 +144,18 @@ class SessionState:
     # 완료된 rep 요약 (StopAnalysis 시 평균 계산용)
     completed_reps: list[CompletedRep] = field(default_factory=list)
 
+    # --- 동시 요청 보호 (#162) ---
+    #
+    # SessionStateRegistry._lock 은 dict 접근(get/create/remove)만 보호한다 — get() 이
+    # 돌려준 SessionState 의 필드 변경은 어떤 락도 안 걸려 있었다. 같은 세션의 요청 둘이
+    # 동시에 들어오면(재시도·네트워크 재정렬·같은 session_id 로 붙는 여러 기기) accept_frame
+    # 의 데드라인 read-modify-write 뿐 아니라 rep 상태머신(analyzer.process_frame)·
+    # current_rep_frames 버퍼도 함께 경합한다 — 후자가 더 크다(#78·#79·#80·#85 와 같은 축).
+    # 세션당 하나이므로 다른 세션과는 안 걸린다. 호출부(pose.py)가 accept_frame 판정부터
+    # rep 버퍼 조작까지 **이 락 하나로** 감싼다 — gRPC 콜백(Spring 전송)은 락 밖에서 돈다,
+    # 네트워크 호출을 락 안에 두면 그 세션의 다음 프레임이 그동안 전부 막힌다.
+    state_lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+
     # --- 유입 속도 상한 (#143 ㄱ-2) ---
     #
     # 다음 프레임을 받을 수 있는 가장 이른 시각 (time.monotonic 기준). None 이면 아직 한 장도
@@ -230,6 +242,12 @@ def elapsed_sec(state: SessionState, now: float) -> float:
 
 def accept_frame(state: SessionState, now: float) -> bool:
     """유입 속도 상한을 넘지 않는 프레임만 True (#143 ㄱ-2).
+
+    🔴 **호출부가 `state.state_lock` 을 쥔 채로 불러야 한다(#162).** 이 함수 자체는 락을
+    안 잡는다 — 호출부(pose.py)가 이 함수부터 rep 버퍼 조작까지 한 락으로 묶으므로, 여기서
+    또 잡으면 이중 획득(reentrant 아닌 `threading.Lock` 이라 데드락)이 된다. 락 없이 단독
+    호출하면 데드라인 read-modify-write 가 다시 무방비 상태로 돌아간다 — 단위 테스트가
+    락 없이 이 함수를 직접 부르는 것은 안전하다(단일 스레드이므로).
 
     Args:
         state: 대상 세션. 수락/드롭 카운터와 데드라인이 여기서 갱신된다.
