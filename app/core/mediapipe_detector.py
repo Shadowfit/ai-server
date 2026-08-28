@@ -213,6 +213,11 @@ class DetectorPool:
         self._guard = threading.Lock()
         self._detectors: dict[int, PoseDetector] = {}
         self._locks: dict[int, threading.Lock] = {}
+        # session_id → 생성 중임을 알리는 이벤트(#599). 이 세션의 PoseDetector() 가 아직
+        # self._detectors 에 안 들어갔다는 뜻 — 다른 세션의 acquire/release/lease 는
+        # 이걸로 막히지 않는다(그 자리에 없으니까). 같은 session_id 로 동시에 여러 번
+        # 불리는 경우(중복 호출·재시도)에만 이 이벤트로 줄을 세운다.
+        self._building: dict[int, threading.Event] = {}
 
     @property
     def capacity(self) -> int:
@@ -223,15 +228,51 @@ class DetectorPool:
 
         검출기는 여기서 «만들지만» 메모리는 첫 추론에서 붙는다(M2: 생성 0.1MB / 추론 98.5MB).
         즉 시작만 하고 프레임을 안 보내는 세션은 자리만 차지하고 메모리는 안 먹는다.
+
+        🔴 `PoseDetector()` 생성(MediaPipe 그래프 초기화)은 값싼 작업이 아니다(#599 실측:
+        동시성이 늘수록 지연이 거의 선형으로 늘었다 — `loadtest/results/
+        grpc-threadpool-sizing-reattach-593/README.md`). 예전엔 이 생성이 `self._guard`
+        **안에서** 돌아 세션 하나를 만드는 동안 풀 전체(다른 세션의 acquire·release·lease
+        전부)가 막혔다. 지금은 "자리를 예약"만 락 안에서 하고, 생성 자체는 락 **밖**에서
+        한다 — 다른 세션은 이 세션의 생성 완료를 기다릴 이유가 없다.
         """
         with self._guard:
             if session_id in self._detectors:
                 return True
-            if len(self._detectors) >= self._capacity:
+            event = self._building.get(session_id)
+            if event is not None:
+                is_builder = False
+            elif len(self._detectors) + len(self._building) >= self._capacity:
+                # 이미 만드는 중인 세션도 자리를 하나 쓰는 셈이라 같이 센다 — 안 그러면
+                # 동시 요청이 몰릴 때 capacity 를 넘겨서 받아버린다.
                 return False
-            self._detectors[session_id] = PoseDetector()
-            self._locks[session_id] = threading.Lock()
-            return True
+            else:
+                event = threading.Event()
+                self._building[session_id] = event
+                is_builder = True
+
+        if not is_builder:
+            # 다른 스레드가 이미 이 session_id 를 만드는 중이다(중복 호출·재시도) — 새로
+            # 만들지 않고 그 완료를 기다린다. 이 대기는 **이 session_id 하나에만** 걸린다.
+            event.wait()
+            with self._guard:
+                return session_id in self._detectors
+
+        # 이 아래는 builder(예약을 딴 스레드)만 온다. `finally`가 성공·실패 어느 쪽이든
+        # _building 예약을 반드시 풀고 event.set()으로 대기자를 반드시 깨운다 — 여기서
+        # 안 하면 생성 실패 시 그 자리가 영원히 죽고 대기자도 영원히 못 깬다.
+        detector: PoseDetector | None = None
+        try:
+            detector = PoseDetector()          # 🔴 락 밖 — 비싼 작업
+        finally:
+            with self._guard:
+                self._building.pop(session_id, None)
+                if detector is not None:
+                    self._detectors[session_id] = detector
+                    self._locks[session_id] = threading.Lock()
+            event.set()
+
+        return True
 
     def lease(self, session_id: int) -> _Lease | None:
         with self._guard:
@@ -240,7 +281,13 @@ class DetectorPool:
         return None if det is None else _Lease(det, lock)
 
     def release(self, session_id: int) -> bool:
-        """자리를 반납하고 `close()` 한다. M2 에서 회수율 100% 를 확인했다."""
+        """자리를 반납하고 `close()` 한다. M2 에서 회수율 100% 를 확인했다.
+
+        ⚠️ 생성 중(`_building`)인 session_id 는 여기서 안 걸린다 — StopAnalysis 는
+        StartAnalysis/ReattachAnalysis 가 이미 성공 응답을 보낸 **뒤에만** 호출될 수 있고,
+        그 응답은 `acquire()` 가 생성까지 끝내고 반환한 뒤에만 나가므로, release() 가 불릴
+        시점엔 이미 `self._detectors` 에 들어가 있다(#599).
+        """
         with self._guard:
             det = self._detectors.pop(session_id, None)
             self._locks.pop(session_id, None)
@@ -251,7 +298,7 @@ class DetectorPool:
 
     def status(self) -> tuple[int, int]:
         with self._guard:
-            return len(self._detectors), self._capacity
+            return len(self._detectors) + len(self._building), self._capacity
 
     def shutdown(self) -> int:
         """남아 있는 검출기를 전부 닫는다. 반환값 = 닫은 개수(= 종료 시점의 활성 세션 수).
