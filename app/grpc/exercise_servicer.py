@@ -451,6 +451,13 @@ def _send_complete_analysis(state) -> None:
     # gRPC 서버 쓰레드와 다른 컨텍스트라서 작은 지연으로 race 회피
     time.sleep(0.1)
 
+    # 세션이 끝나면 SessionState 째 사라지므로, 다음 rep 완성을 기다리며 재시도할 기회가
+    # 더 없다 — 마지막으로 한 번 더 비워본다 (#193 재전송,
+    # feedback-batch-retransmission.md §7). 이 시도도 실패하면 허용되는 손실로 둔다.
+    from app.api.endpoints.pose import flush_pending_feedback
+
+    flush_pending_feedback(state)
+
     reps = state.completed_reps
 
     # 총 횟수는 len(completed_reps) 가 아니라 rep_count 를 쓴다 (이슈 #59 2단계).

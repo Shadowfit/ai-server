@@ -13,6 +13,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
+from app.grpc import spring_client
 from app.models.pose import Landmark
 
 logger = logging.getLogger(__name__)
@@ -143,6 +144,14 @@ class SessionState:
 
     # 완료된 rep 요약 (StopAnalysis 시 평균 계산용)
     completed_reps: list[CompletedRep] = field(default_factory=list)
+
+    # 아직 Spring 에 확인받지 못한 피드백 이벤트 (#193 재전송,
+    # docs/decisions/feedback-batch-retransmission.md §7). 성공(OK) 해야만 비운다 — 보내기
+    # 전에 비우면 그 실패분이 다음 시도에 안 실린다. 상한을 안 두는 이유도 그 문서에 있다:
+    # current_rep_frames 와 달리 이벤트가 가볍고 애초에 희소해 무한 누적 위험이 없다.
+    pending_feedback_events: list[spring_client.PendingFeedbackEvent] = field(
+        default_factory=list
+    )
 
     # --- 동시 요청 보호 (#162) ---
     #

@@ -121,8 +121,18 @@ def main() -> int:
     if r.status_code not in (200, 202):
         log("세션 시작 실패", f"{r.status_code} {r.text[:200]}")
         return 1
-    session_id = r.json()["sessionId"]
-    log("세션 시작", f"{r.status_code} sessionId={session_id}")
+    session_body = r.json()
+    session_id = session_body["sessionId"]
+    # 세션 고정 라우팅(docs/decisions/ai-channel-pool-hardening.md) — Spring 이 이 세션을
+    # 처리할 AI 워커를 여기서 이미 정해서 돌려준다. nginx-ai(conf.d/default.conf)는
+    # X-AI-Worker 헤더로만 그 워커에 보낸다 — 헤더가 없으면 무조건 worker 0 이라, 세션이
+    # 다른 워커에 있으면 그 프로세스는 이 session_id 를 몰라 SESSION_NOT_FOUND 를 낸다.
+    ai_worker = str(session_body.get("aiWorkerIndex", 0))
+    # 세션 소유권 검증값 (#187 안 (d)) — 이 응답으로만 나온다. /pose 에 안 실으면 AI 가
+    # "소유권 대조 실패"로 프레임을 버리는데, 그 응답이 일부러 SESSION_NOT_FOUND 와
+    # 똑같은 모양이라(session 열거 방지) 겉으로는 "배정이 안 끝났다"와 구분이 안 된다.
+    session_nonce = session_body.get("sessionNonce")
+    log("세션 시작", f"{r.status_code} sessionId={session_id} aiWorker={ai_worker}")
 
     # ── ②-1 AI 세션 배정 대기 ───────────────────────────────────────────────
     # 세션 시작은 202 다 — Spring 이 받았다는 뜻이지 AI 가 배정을 끝냈다는 뜻이 아니다.
@@ -130,7 +140,7 @@ def main() -> int:
     # 🔴 status 만 보면 정상으로 보인다. #196 이 지적한 함정이 정확히 이것이고, 이 드라이버도
     #    처음엔 여기 걸려 28프레임을 헛보냈다.
     probe = {"image": "", "exercise_type": "squat", "session_id": session_id}
-    ai_headers = {"Authorization": f"Bearer {args.ai_token}"}
+    ai_headers = {"Authorization": f"Bearer {args.ai_token}", "X-AI-Worker": ai_worker}
 
     # ── ③ 프레임 유입 ───────────────────────────────────────────────────────
     cap = cv2.VideoCapture(args.video)
@@ -162,6 +172,7 @@ def main() -> int:
             "image": base64.b64encode(buf.tobytes()).decode(),
             "exercise_type": "squat",
             "session_id": session_id,
+            "session_nonce": session_nonce,
         }
         # 첫 프레임은 AI 배정이 끝날 때까지 재시도한다(위 ②-1 참고).
         attempts = 12 if sent == 0 else 1

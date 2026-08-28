@@ -19,6 +19,7 @@ from app.config import settings
 from app.core.analyzer_registry import get_analyzer
 from app.core.angle_calculator import extract_angles
 from app.core.mediapipe_detector import get_detector, lease_detector
+from app.core.squat_analyzer import _torso_tilt_degrees
 from app.grpc import spring_client
 from app.grpc.session_state import (
     MIN_FRAME_INTERVAL_SEC,
@@ -38,6 +39,16 @@ router = APIRouter(prefix="/pose", tags=["포즈 감지"])
 # 분석기 레지스트리는 app.core.analyzer_registry 로 옮겼다(이슈 #147). gRPC servicer 도 같은
 # 표를 봐야 하는데, 그게 HTTP 엔드포인트 모듈에 있으면 참조 방향이 거꾸로가 된다.
 
+# BACK_BENT(#193·#228) 판정 컷. squat_analyzer.analyze_squat_frames:228 의 기존 mean_torso 컷과
+# 같은 값이다 — 새 임계값이 아니라 배치(영상 업로드) 경로가 이미 쓰는 "과도한 전방 기울임"
+# 판정을 스트리밍 경로에 재사용한다. 정답지 대비 상대 판정이 아니라 절대값인 것은 의도적인
+# 축소다(feedback-type-detector.md 의 "정답지 대비" 설계와는 다르다) — 판정 자체는
+# squat_analyzer.py·exercise_servicer.py를 안 건드리고 이 파일 안에서 끝낸다(SessionState에
+# pending_feedback_events 버퍼 하나는 재전송 때문에 추가돼 있다, 아래 flush_pending_feedback).
+# 값이 어긋나면(둘 중 하나만 바뀌면) 두 경로가 다른 기준으로 "등 굽음"을 판정하게 된다는
+# 뜻이니 같이 바꿀 것.
+_BACK_BENT_TILT_THRESHOLD = 35.0
+
 
 def _landmarks_to_json(landmarks: list[Landmark]) -> str:
     return json.dumps(
@@ -46,6 +57,42 @@ def _landmarks_to_json(landmarks: list[Landmark]) -> str:
             for lm in landmarks
         ]
     )
+
+
+def flush_pending_feedback(state) -> None:
+    """`state.pending_feedback_events`를 오래된 것부터 1건씩 Spring에 보낸다.
+
+    (#193 재전송, `docs/decisions/feedback-batch-retransmission.md` §7)
+
+    한 번에 1건만 보내는 이유: `FeedbackBatchOutcome`은 배치 전체에 대해서만 나온다. batch를
+    항상 1로 고정하면 "이 배치 안에서 어느 건이 무효인가"를 가릴 필요 자체가 없어진다 —
+    방금 보낸 그 1건이 곧 거절당한 그 건이다.
+
+    호출자(`pose.py`의 rep 완성 분기, `exercise_servicer.py`의 `StopAnalysis`)가 락 밖에서
+    불러야 한다 — 매 시도가 gRPC 호출이라 락 안에서 돌리면 그 세션의 다음 프레임이 막힌다.
+    """
+    while state.pending_feedback_events:
+        event = state.pending_feedback_events[0]
+        outcome, _ = spring_client.report_feedback_batch(
+            state.session_id,
+            1,      # set_no — BT-NONE 호환 고정값. 세트 경계 개념이 아직 없다
+            False,  # is_final — Spring 이 현재 안 읽는 필드(ExerciseGrpcService.reportFeedbackBatch)
+            [event],
+        )
+        if outcome == spring_client.FeedbackBatchOutcome.OK:
+            state.pending_feedback_events.pop(0)
+            continue
+        if outcome == spring_client.FeedbackBatchOutcome.SESSION_GONE:
+            # 재시도해도 세션은 안 돌아온다 — 버퍼째 버린다.
+            state.pending_feedback_events.clear()
+            return
+        if outcome == spring_client.FeedbackBatchOutcome.INVALID:
+            # 우리 쪽 값 오류다. 같은 값을 또 보내도 똑같이 거절당하니 이 1건만 버리고 다음으로.
+            state.pending_feedback_events.pop(0)
+            continue
+        # TRANSIENT — 버퍼는 유지하고 이번엔 여기서 그만 시도한다. 다음 rep 완성(또는
+        # StopAnalysis의 마지막 flush)때 이 건부터 다시 시도된다.
+        return
 
 
 # 응답 생성 방식(팔). `ai-process-ceiling-cause.md` §11 — 기본은 현행(`model`)이다.
@@ -310,6 +357,40 @@ def _detect_pose(req: PoseRequest):
         for f in rep_frames_snapshot
     ]
     spring_client.report_pose_data_batch(state.session_id, pose_data_list)
+
+    # BACK_BENT 감지 (#193·#228). 게이트는 이미 있는 3종 심각도를 그대로 쓴다 — "자세 양호"면
+    # 애초에 유형을 안 만든다(새 임계값 0개). rep_frames_snapshot 의 joint_coordinates 에 이미
+    # 저장된 좌표에서 상체 기울기를 다시 계산한다 — PerRepFrame 에 새 필드를 안 만들기 위해서다.
+    if rep_event.feedback_message != "자세 양호" and rep_frames_snapshot:
+        tilts = []
+        for f in rep_frames_snapshot:
+            try:
+                raw_landmarks = json.loads(f.joint_coordinates)
+                lm_by_index = {
+                    item["index"]: Landmark(
+                        index=item["index"],
+                        x=item["x"],
+                        y=item["y"],
+                        z=item.get("z", 0.0),
+                        visibility=item.get("visibility", 1.0),
+                    )
+                    for item in raw_landmarks
+                }
+                tilts.append(_torso_tilt_degrees(lm_by_index))
+            except (json.JSONDecodeError, KeyError):
+                continue
+        if tilts and (sum(tilts) / len(tilts)) > _BACK_BENT_TILT_THRESHOLD:
+            state.pending_feedback_events.append(
+                spring_client.PendingFeedbackEvent(
+                    feedback_type="BACK_BENT",
+                    rep_number=rep_event.rep_number,
+                    sync_rate_at_trigger=rep_event.sync_rate,
+                )
+            )
+
+    # 이번 rep에서 새로 생겼든 이전 rep에서 못 보내고 남았든, rep 완성마다 한 번 비워본다
+    # (재전송, #193·docs/decisions/feedback-batch-retransmission.md §7).
+    flush_pending_feedback(state)
 
     # 누적 요약 보관 + 현재 rep 버퍼 비우기 — 다시 락을 잡는다. clear() 가 스냅샷 이후 새로
     # 들어온 프레임까지 지우면 안 되므로, 통째로 비우지 않고 스냅샷한 만큼만 왼쪽에서 덜어낸다.
