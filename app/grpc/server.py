@@ -80,7 +80,7 @@ def _run_grpc_server_inner() -> None:
 
     with _server_lock:
         _server = grpc.server(
-            futures.ThreadPoolExecutor(max_workers=10),
+            futures.ThreadPoolExecutor(max_workers=settings.GRPC_MAX_WORKERS),
             # correlation 인터셉터를 앞에 둬서 인증 거부된 호출의 로그에도 id 가 남게 한다.
             interceptors=[
                 CorrelationServerInterceptor(),

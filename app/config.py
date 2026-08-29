@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     #    한도도 없고 설정도 없으면 **기동을 거부한다.**
     POSE_DETECTOR_POOL_SIZE: int = 0
 
+    # gRPC 서버 스레드풀 크기 (#593 — 근거 없는 매직넘버였다, 실측으로 좁히는 중).
+    # 기본 10은 여전히 «측정된 적정값»이 아니라 배포 중인 값 그대로다 — 바뀌면 여기 주석도
+    # 갱신할 것. loadtest/measure_grpc_threadpool_sizing_reattach.py --max-workers 로
+    # 실측 스윕 시 이 값을 오버라이드한다.
+    GRPC_MAX_WORKERS: int = 10
+
     # 프로세스 워커 수 (2026-08-26, GIL 병목 회피로 프로세스 분리 도입).
     #
     # 🔴 memory_ceiling() 이 컨테이너 메모리 한도를 «내가 유일한 프로세스» 라고 가정하고
