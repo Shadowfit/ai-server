@@ -4,15 +4,15 @@ session_id가 함께 오면 누적 분석 + rep 감지를 수행하고,
 rep 1회가 완성될 때마다 Spring에 PoseData 묶음을 콜백한다.
 """
 
-import json
 import logging
 import secrets
 import time
 
 import cv2
+import orjson
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from fastapi.responses import ORJSONResponse
 
 import exercise_pb2
 from app.config import settings
@@ -34,7 +34,7 @@ from app.utils.image_utils import base64_to_image
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/pose", tags=["포즈 감지"])
+router = APIRouter(prefix="/pose", tags=["포즈 감지"], default_response_class=ORJSONResponse)
 
 # 분석기 레지스트리는 app.core.analyzer_registry 로 옮겼다(이슈 #147). gRPC servicer 도 같은
 # 표를 봐야 하는데, 그게 HTTP 엔드포인트 모듈에 있으면 참조 방향이 거꾸로가 된다.
@@ -51,12 +51,12 @@ _BACK_BENT_TILT_THRESHOLD = 35.0
 
 
 def _landmarks_to_json(landmarks: list[Landmark]) -> str:
-    return json.dumps(
+    return orjson.dumps(
         [
             {"index": lm.index, "x": lm.x, "y": lm.y, "z": lm.z, "visibility": lm.visibility}
             for lm in landmarks
         ]
-    )
+    ).decode()
 
 
 def flush_pending_feedback(state) -> None:
@@ -145,7 +145,7 @@ def detect_pose(req: PoseRequest):
         payload = result.model_dump(mode="json")
         if _RESPONSE_MODE == "dict":
             return payload
-        return JSONResponse(content=payload)
+        return ORJSONResponse(content=payload)
     finally:
         frame_path.mark_handler_out()
 
@@ -365,7 +365,7 @@ def _detect_pose(req: PoseRequest):
         tilts = []
         for f in rep_frames_snapshot:
             try:
-                raw_landmarks = json.loads(f.joint_coordinates)
+                raw_landmarks = orjson.loads(f.joint_coordinates)
                 lm_by_index = {
                     item["index"]: Landmark(
                         index=item["index"],
@@ -377,7 +377,7 @@ def _detect_pose(req: PoseRequest):
                     for item in raw_landmarks
                 }
                 tilts.append(_torso_tilt_degrees(lm_by_index))
-            except (json.JSONDecodeError, KeyError):
+            except (orjson.JSONDecodeError, KeyError):
                 continue
         if tilts and (sum(tilts) / len(tilts)) > _BACK_BENT_TILT_THRESHOLD:
             state.pending_feedback_events.append(
