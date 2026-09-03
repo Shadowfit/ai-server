@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from functools import lru_cache
 from pathlib import Path
+
+import orjson
 
 from app.models.sync import SyncReference, SyncReferenceList
 
@@ -15,7 +16,7 @@ KKW_SYNC_DATASET_PATH = REFERENCE_DATA_DIR / "kkw_squat_sync_dataset.json"
 
 @lru_cache(maxsize=1)
 def load_kkw_sync_dataset() -> SyncReferenceList:
-    payload = json.loads(KKW_SYNC_DATASET_PATH.read_text(encoding="utf-8"))
+    payload = orjson.loads(KKW_SYNC_DATASET_PATH.read_bytes())
     return SyncReferenceList.model_validate(payload)
 
 

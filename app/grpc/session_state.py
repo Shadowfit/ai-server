@@ -83,6 +83,9 @@ class PerRepFrame:
     # 뽑혀 이상한 뼈대가 리포트에 그려진다. 대가로 최소점이 1~2프레임 밀리지만 다운샘플(R≈5)에 묻힌다.
     smoothed_knee_angle: float = 0.0
 
+    # BACK_BENT 재판정(pose.py)이 joint_coordinates를 다시 파싱하지 않도록 원본 객체도 들고 있는다.
+    landmarks: list[Landmark] = field(default_factory=list)
+
 
 @dataclass
 class CompletedRep:

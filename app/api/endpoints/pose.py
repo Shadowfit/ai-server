@@ -323,6 +323,7 @@ def _detect_pose(req: PoseRequest):
             joint_coordinates=_landmarks_to_json(landmarks),
             angles=angles,
             smoothed_knee_angle=smoothed_knee_angle,
+            landmarks=landmarks,
         )
         state.current_rep_frames.append(frame)
 
@@ -359,26 +360,18 @@ def _detect_pose(req: PoseRequest):
     spring_client.report_pose_data_batch(state.session_id, pose_data_list)
 
     # BACK_BENT 감지 (#193·#228). 게이트는 이미 있는 3종 심각도를 그대로 쓴다 — "자세 양호"면
-    # 애초에 유형을 안 만든다(새 임계값 0개). rep_frames_snapshot 의 joint_coordinates 에 이미
-    # 저장된 좌표에서 상체 기울기를 다시 계산한다 — PerRepFrame 에 새 필드를 안 만들기 위해서다.
+    # 애초에 유형을 안 만든다(새 임계값 0개). 🔄 2026-09-03 정정: 예전엔 여기서 joint_coordinates
+    # (Spring 전송용으로 dumps해 둔 JSON)를 다시 loads해서 썼다("PerRepFrame에 새 필드를 안
+    # 만들기 위해서"). 그런데 이 프레임을 만들 때 이미 감지된 원본 landmarks 객체가 있는데
+    # 같은 요청 안에서 그걸 문자열로 만들었다가 도로 파싱하는 왕복이라, PerRepFrame에 필드
+    # 하나(landmarks)를 얹어 그 왕복 자체를 없앴다.
     if rep_event.feedback_message != "자세 양호" and rep_frames_snapshot:
         tilts = []
         for f in rep_frames_snapshot:
-            try:
-                raw_landmarks = orjson.loads(f.joint_coordinates)
-                lm_by_index = {
-                    item["index"]: Landmark(
-                        index=item["index"],
-                        x=item["x"],
-                        y=item["y"],
-                        z=item.get("z", 0.0),
-                        visibility=item.get("visibility", 1.0),
-                    )
-                    for item in raw_landmarks
-                }
-                tilts.append(_torso_tilt_degrees(lm_by_index))
-            except (orjson.JSONDecodeError, KeyError):
+            if not f.landmarks:
                 continue
+            lm_by_index = {lm.index: lm for lm in f.landmarks}
+            tilts.append(_torso_tilt_degrees(lm_by_index))
         if tilts and (sum(tilts) / len(tilts)) > _BACK_BENT_TILT_THRESHOLD:
             state.pending_feedback_events.append(
                 spring_client.PendingFeedbackEvent(
