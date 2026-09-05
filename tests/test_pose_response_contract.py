@@ -112,12 +112,21 @@ class PoseResponseContractTest(unittest.TestCase):
 
     # ── 나머지 거절 갈래도 사유를 단다 ──────────────────────────────────────
 
-    def test_배정_없음은_NO_LEASE_다(self) -> None:
+    def test_배정_없음도_세션_없음과_구분되면_안_된다(self) -> None:
+        """#605 — lease 게이트가 registry 게이트보다 먼저 돈다고 응답이 갈리면,
+        session_id 를 훑어 "지금 배정된 분석기가 있는 세션"(≈ 진행 중)을 열거할 수 있다.
+        #187 안 (d)가 정한 "거절은 세션 없음과 같은 모양이어야 한다"를 첫 게이트에도 적용한다.
+        """
         self._session(9205)
-        res = self._run(9205, None, lease=False)
+        no_lease = self._run(9205, None, lease=False)
 
-        self.assertFalse(res.success)
-        self.assertEqual(res.skip_reason, PoseSkipReason.NO_LEASE)
+        self.assertFalse(no_lease.success)
+        self.assertEqual(no_lease.skip_reason, PoseSkipReason.SESSION_NOT_FOUND)
+        self.assertEqual(
+            no_lease.message,
+            "세션 9205가 시작되지 않았습니다 (StartAnalysis 먼저 호출 필요)",
+            "같은 session_id 라면 registry 게이트가 내는 메시지와 글자 하나까지 같아야 한다",
+        )
 
     def test_세션_미시작은_SESSION_NOT_FOUND_다(self) -> None:
         # 레지스트리에 안 만든다.

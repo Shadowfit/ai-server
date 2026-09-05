@@ -178,10 +178,20 @@ def _detect_pose(req: PoseRequest):
     lease = lease_detector(req.session_id)
     if lease is None:
         # 풀에 자리가 없다 = 세션이 시작되지 않았거나 상한에 걸렸다.
+        #
+        # 🔴 응답은 아래 `state is None` 분기와 **똑같아야 한다** (#187 안 (d), #605).
+        #    이 게이트는 registry 검사보다 먼저 도니, 여기서 구분되는 응답을 내면 그 원칙이
+        #    두 번째 게이트에서만 지켜지고 첫 번째 게이트에서는 session_id 를 훑어 "지금 배정된
+        #    분석기가 있는 세션"(≈ 진행 중)을 열거할 수 있게 된다 — #605 가 실제로 재현했다.
+        #    구분은 서버 로그에만 남긴다.
+        logger.warning(
+            "세션 %s 에 배정된 분석기가 없다 (풀 상한 또는 미시작) — 응답은 «세션 없음» 과 같다 (#605)",
+            req.session_id,
+        )
         return PoseResponse(
             success=False,
-            skip_reason=PoseSkipReason.NO_LEASE,
-            message=f"세션 {req.session_id}에 배정된 분석기가 없습니다 (StartAnalysis 먼저 호출 필요)",
+            skip_reason=PoseSkipReason.SESSION_NOT_FOUND,
+            message=f"세션 {req.session_id}가 시작되지 않았습니다 (StartAnalysis 먼저 호출 필요)",
         )
     with lease as detector:
         # 리스 획득까지가 후보 2순위(검출기 획득 경로, §10-2)다. 추론과 갈라서 잰다 —
