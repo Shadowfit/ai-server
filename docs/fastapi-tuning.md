@@ -52,7 +52,8 @@ ai-server는 아웃바운드 DB 클라이언트도, 아웃바운드 HTTP 클라�
   이 스레드풀엔 적용된 적이 없고, 지금은 병목이 아니라서 안 드러날 뿐 "10이 맞다"고 검증된
   것도 아니다. 이슈: [#593](https://github.com/Shadowfit/init/issues/593).
 - **MediaPipe 검출기 풀** — `app/core/mediapipe_detector.py`, `POSE_DETECTOR_POOL_SIZE`(설정값,
-  컨테이너 메모리 한도에서 유도 — 검출기 1개당 98.7MB 실측, 예: 2026-08-17 판에서 풀=201).
+  컨테이너 메모리 한도에서 유도 — x86 실측 적합 `708 + 106.74×세션` MiB, 2026-09-02부터 적용
+  [#229](https://github.com/Shadowfit/init/issues/229), 20,000MiB 한도에서 풀=180).
   이게 개념적으로 HikariCP의 "미리 만들어둔 재사용 객체 풀"에 제일 가깝다 — DB 커넥션 대신
   MediaPipe 검출기 인스턴스를 풀링한다.
 - **Spring↔AI gRPC channel pool**은 AI 쪽이 아니라 Spring 쪽에 있다 —

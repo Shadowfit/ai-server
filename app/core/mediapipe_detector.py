@@ -127,21 +127,32 @@ def get_detector() -> PoseDetector:
 #   그리고 «바쁠수록 안전하고 한가할수록 위험» 하다. 3fps 가 실사용 값이라 평시에 계속 샜다.
 #
 # 왜 «풀» 인가(무제한 dict 가 아니라):
-#   검출기 1개 = **98.7MB**(M2 실측, loadtest/results/detector-memory-2026-08-11/).
-#   세션마다 무제한으로 만들면 메모리가 세션 수에 비례해 늘고, 지금까지 «스레드 수» 가
-#   저절로 씌워주던 뚜껑이 사라진다. 풀 크기가 곧 **동시 활성 세션 상한**이다.
+#   검출기 1개 = **98.7MB**(M2 실측, loadtest/results/detector-memory-2026-08-11/) — 검출기
+#   «자체» 만의 비용이다. 세션마다 무제한으로 만들면 메모리가 세션 수에 비례해 늘고, 지금까지
+#   «스레드 수» 가 저절로 씌워주던 뚜껑이 사라진다. 풀 크기가 곧 **동시 활성 세션 상한**이다.
+#   ⚠️ 아래 풀 상한 공식의 `_PER_SESSION_MIB` 는 이 값이 **아니다** — 프레임 버퍼·파이썬 힙·
+#   gRPC 몫까지 포함한 다른(더 큰) 실측이다. 근거: `docs/decisions/detector-pool-ceiling-formula.md`.
 #
 # 왜 락이 필요한가:
 #   M1(loadtest/results/detector-portability-2026-08-11/)은 **순차 호출**만 검증했다.
 #   클라에 백프레셔가 없어(exercise.tsx:195) 같은 세션 프레임이 겹칠 수 있고, 겹쳐서 같은
 #   PoseDetector 를 동시에 부르면 지금보다 나쁘다. 그래서 세션당 락으로 직렬화한다.
 
-_BASE_RSS_MB = 100.5      # 모델 로드 후·검출기 0개 (M2 실측)
-_PER_DETECTOR_MB = 98.7   # 검출기 1개당 (M2 실측, 첫 추론 시 지연 할당)
+# 🔴 2026-09-02 — 옛 상수(100.5 / 98.7, M2·ARM 실측, «검출기만» 계산)를 교체했다
+#    (#229, `docs/decisions/detector-pool-ceiling-formula.md` §6 ㄱ, 2026-09-02 사용자 confirm).
+#    아래 둘은 x86 c7i.4xlarge 에서 AI 컨테이너 RSS 최댓값을 세션 수로 최소자승 적합한
+#    값이고(從 R5, 2026-08-15), 프레임 버퍼·base64 임시·파이썬 힙·gRPC 몫이 **포함돼 있다**
+#    — 옛 상수가 스스로 달던 "미측정이라 안 뺐다" 경고는 이제 안 맞는다. 다른 세 EC2
+#    라운드(08-16·b-16·08-17)로 표본 밖 검증까지 마쳤다(평균 절대오차 1.18%, 같은 문서 §2-1).
+#    ⚠️ 그래도 **한 박스 타입·한 워크로드**의 값이다(§8) — 기계를 바꾸면 재측정해야 한다.
+#    이름도 실체에 맞춘다 — 옛 이름은 `_MB`인데 실제로는(그리고 `_cgroup_memory_limit_mib()`
+#    가 돌려주는 값도) **MiB** 다.
+_BASE_RSS_MIB = 708.0        # 세션 0 상태 + 세션 수에 안 비례하는 고정 몫
+_PER_SESSION_MIB = 106.74    # 세션당 한계비용 (검출기 자체 + 버퍼·힙·gRPC 몫 포함)
 
 
-def _cgroup_memory_limit_mb() -> float | None:
-    """이 «컨테이너» 에 허용된 메모리(MB). 한도가 없으면 None.
+def _cgroup_memory_limit_mib() -> float | None:
+    """이 «컨테이너» 에 허용된 메모리(MiB). 한도가 없으면 None.
 
     호스트 전체가 아니라 내 몫을 봐야 한다 — 한도가 없으면 AI 가 MySQL 몫까지 자기 것으로
     착각하고 상한을 계산한다.
@@ -167,22 +178,23 @@ def _cgroup_memory_limit_mb() -> float | None:
 
 
 def memory_ceiling() -> int | None:
-    """이 컨테이너 메모리로 가능한 검출기 «상한». 한도가 없으면 None.
+    """이 컨테이너 메모리로 가능한 동시 세션 «상한». 한도가 없으면 None.
 
-    ⚠️ 검출기«만» 계산한다. 프레임 버퍼·base64 임시·파이썬 힙·gRPC 는 **미측정**이라 안 뺐다.
-       그러니 컨테이너 한도 자체에 여유를 두라 — 여기서 임의의 «여유분» 을 빼면 그게 또
-       근거 없는 기준값이 된다.
+    프레임 버퍼·base64 임시·파이썬 힙·gRPC 몫까지 실측(EC2 x86)에 포함돼 있다 — 옛 버전은
+    검출기만 계산해 그 몫을 빠뜨렸다(#229). 그래도 **안전계수는 없다** — 이 값은 실측
+    적합이지 여유분이 아니다([[feedback_no_arbitrary_threshold_values]]). 컨테이너 한도
+    자체에 여유를 두는 것은 여전히 배포(운영)의 몫이다.
 
     🔴 컨테이너 한도는 «이 프로세스 혼자 쓰는 몫» 이 아니다(2026-08-26). 워커를 여러 개
        띄우면(AI_WORKER_COUNT) 각 프로세스가 독립적으로 이 계산을 하므로, 나누지 않으면
        프로세스 수만큼 오버부킹된다 — 실측: 워커 3개 x 160개 시도 시 약 47.4GB, 한도
        20GB의 2.4배. 프로세스당 몫 = 한도 / AI_WORKER_COUNT 로 나눈다.
     """
-    limit = _cgroup_memory_limit_mb()
+    limit = _cgroup_memory_limit_mib()
     if limit is None:
         return None
     per_worker_limit = limit / max(1, settings.AI_WORKER_COUNT)
-    return max(1, int((per_worker_limit - _BASE_RSS_MB) / _PER_DETECTOR_MB))
+    return max(1, int((per_worker_limit - _BASE_RSS_MIB) / _PER_SESSION_MIB))
 
 
 class _Lease:
@@ -345,8 +357,8 @@ def get_pool() -> DetectorPool:
                     "근거 없이 기본값을 박으면 그게 출처 없는 기준값이 된다."
                 )
             size = ceiling
-            log.info("검출기 풀 크기 = %d (컨테이너 메모리 한도에서 유도, 검출기 %.1fMB/개)",
-                     size, _PER_DETECTOR_MB)
+            log.info("검출기 풀 크기 = %d (컨테이너 메모리 한도에서 유도, 세션당 %.2fMiB)",
+                     size, _PER_SESSION_MIB)
         elif ceiling is not None and want > ceiling:
             size = ceiling
             log.warning("🔴 POSE_DETECTOR_POOL_SIZE=%d 는 메모리 상한 %d 를 넘는다 → %d 로 낮춘다. "
@@ -355,8 +367,8 @@ def get_pool() -> DetectorPool:
             size = want
             log.info("검출기 풀 크기 = %d (설정값, 메모리 상한 %s)", size, ceiling)
 
-        log.warning("⚠️ 이 상한은 «검출기만» 계산한 값이다. 프레임 버퍼·파이썬 힙은 미측정이라 "
-                    "포함되지 않았다. 컨테이너 한도에 여유를 둘 것.")
+        log.warning("⚠️ 이 상한은 x86 c7i.4xlarge 실측 적합(#229)이지 안전계수가 아니다 — "
+                    "다른 기계·워크로드라면 재측정 없이 그대로 믿지 말 것.")
         _pool = DetectorPool(size)
         return _pool
 
