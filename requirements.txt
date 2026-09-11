@@ -14,7 +14,10 @@ dtaidistance==2.3.12
 python-multipart==0.0.32
 
 grpcio>=1.83.0
-grpcio-tools>=1.62.1
+# 생성기 버전 고정 — 커밋된 exercise_pb2*.py 는 이 버전의 protoc 로 만든 것이고, CI 가 재생성해서
+# 같은지 검사한다(ai-server-test.yml). 범위로 두면 러너마다 다른 산출물이 나와 검사가 거짓 실패한다.
+# 1.62.x 인 이유: protobuf==4.25.x 와 호환되는 마지막 계열(1.63+ 는 protobuf 5 를 요구).
+grpcio-tools==1.62.3
 protobuf==4.25.8
 
 # fastapi.testclient 가 사용. 운영에서도 ai-server 가 외부 호출 시 활용 가능
