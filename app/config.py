@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -26,6 +27,25 @@ class Settings(BaseSettings):
     # 갱신할 것. loadtest/measure_grpc_threadpool_sizing_reattach.py --max-workers 로
     # 실측 스윕 시 이 값을 오버라이드한다.
     GRPC_MAX_WORKERS: int = 10
+
+    # AI → Spring CompleteAnalysis 콜백 스레드 상한 (#614). 0 이면 GRPC_MAX_WORKERS 와 같게.
+    #
+    # 예전엔 StopAnalysis 마다 상한 없이 스레드를 만들었다 — Spring 이 느리면 콜백 하나가 재시도
+    # 3회 × 5초를 붙잡고, 그동안 완료가 몰리면 스레드가 수백 개(EC2 실측 90초에 450개 초과)로 불어
+    # logging 전역 락 경합으로 gRPC 워커 전체가 묶였다.
+    #
+    # 기본값을 GRPC_MAX_WORKERS 에 묶는 근거: 콜백은 StopAnalysis 한 건당 한 번이고, StopAnalysis 는
+    # gRPC 워커 수 이상 동시에 처리되지 않는다. Spring 이 정상(p95 213ms)이면 콜백 하나가 0.3초
+    # 안팎이라 이 수로 초당 수십 건을 소화한다 — 세션이 분 단위로 지속되는 이 앱의 완료율보다
+    # 자릿수로 크다. 그보다 많은 스레드가 «필요» 해지는 건 Spring 이 느릴 때뿐인데, 그때 늘리는
+    # 것이 정확히 위 실패 경로다. 넘치는 콜백은 큐에서 기다린다(큐 깊이는 게이지로 노출).
+    # ⚠️ 실측으로 고른 수는 아니다 — GRPC_MAX_WORKERS 가 바뀌면 같이 따라간다.
+    # 음수는 기동 시 거부한다 — 안 그러면 첫 StopAnalysis 가 세션을 이미 지운 뒤 CallbackPool(-1) 에서
+    # ValueError 로 죽어 콜백이 제출되지 않는다(CodeRabbit, PR #757).
+    COMPLETE_CALLBACK_WORKERS: int = Field(default=0, ge=0)
+
+    def complete_callback_workers(self) -> int:
+        return self.COMPLETE_CALLBACK_WORKERS or self.GRPC_MAX_WORKERS
 
     # 프로세스 워커 수 (2026-08-26, GIL 병목 회피로 프로세스 분리 도입).
     #

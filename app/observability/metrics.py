@@ -72,6 +72,24 @@ def bind_active_sessions(count_fn) -> None:
     active_sessions.set_function(count_fn)
 
 
+# CompleteAnalysis 콜백 풀 상태 (#614). 스레드 수는 상한이 있고 큐는 없다 — «쌓이고 있다» 는
+# 이 게이지로만 보인다. pending 이 workers 를 계속 넘으면 Spring 쪽이 느린 것이다.
+complete_callback_pending = Gauge(
+    "shadowfit_ai_complete_callback_pending",
+    "CompleteAnalysis 콜백 풀 큐에서 기다리는 작업 수 (#614)",
+)
+complete_callback_in_flight = Gauge(
+    "shadowfit_ai_complete_callback_in_flight",
+    "CompleteAnalysis 콜백 풀에서 실행 중인 작업 수 (≤ COMPLETE_CALLBACK_WORKERS, #614)",
+)
+
+
+def bind_complete_callback_pool(pool) -> None:
+    """콜백 풀의 큐 깊이·실행 수를 «스크레이프 시점에» 읽도록 붙인다."""
+    complete_callback_pending.set_function(pool.pending)
+    complete_callback_in_flight.set_function(pool.in_flight)
+
+
 def render() -> bytes:
     """Prometheus 텍스트 포맷."""
     return generate_latest(REGISTRY)

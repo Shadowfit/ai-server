@@ -135,6 +135,11 @@ if settings.FRAME_PATH_METRICS:
 
     metrics.bind_active_sessions(lambda: _get_registry().active_count())
 
+    # CompleteAnalysis 콜백 풀 큐 깊이 (#614) — 스레드 상한의 반대편, «쌓임» 은 여기서만 보인다.
+    from app.grpc.exercise_servicer import get_complete_callback_pool as _get_callback_pool
+
+    metrics.bind_complete_callback_pool(_get_callback_pool())
+
     _recorder = frame_path.install(settings.FRAME_PATH_SAMPLES)
     app.add_middleware(
         frame_path.FramePathMiddleware,

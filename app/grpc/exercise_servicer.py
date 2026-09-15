@@ -19,9 +19,11 @@ from google.protobuf.timestamp_pb2 import Timestamp
 
 import exercise_pb2
 import exercise_pb2_grpc
+from app.config import settings
 from app.core.analyzer_registry import resolve_exercise_type, supported_exercise_ids
 from app.core.angle_calculator import extract_angles
 from app.grpc import spring_client
+from app.grpc.callback_pool import CallbackPool
 from app.grpc.correlation import wrap as correlation_wrap
 from app.core.mediapipe_detector import get_pool
 from app.grpc.session_state import get_registry
@@ -387,15 +389,12 @@ class ExerciseServicer(exercise_pb2_grpc.ExerciseServiceServicer):
                 ),
             )
 
-        # 누적된 rep들로 최종 통계 산출 → 별도 스레드에서 Spring 콜백.
-        # correlation_wrap 필수 — 새 스레드는 이 핸들러의 ContextVar 를 상속하지 않아서,
+        # 누적된 rep들로 최종 통계 산출 → 콜백 풀에서 Spring 콜백 (#614: 예전엔 호출마다 스레드를
+        # 새로 만들어 Spring 이 느리면 수백 개로 불었다 — 풀은 상한이 있고 넘치면 큐에서 기다린다).
+        # correlation_wrap 필수 — 풀 스레드는 이 핸들러의 ContextVar 를 상속하지 않아서,
         # 감싸지 않으면 CompleteAnalysis 콜백이 자기를 촉발한 StopAnalysis 와 안 이어진다.
         # 이 콜백이 곧 타임아웃 스케줄러와 같은 세션을 두고 경쟁하는 쪽이라 추적이 끊기면 곤란하다.
-        threading.Thread(
-            target=correlation_wrap(_send_complete_analysis),
-            args=(state,),
-            daemon=True,
-        ).start()
+        get_complete_callback_pool().submit(correlation_wrap(_send_complete_analysis), state)
 
         return exercise_pb2.StopResponse(
             success=True,
@@ -445,6 +444,20 @@ class ExerciseServicer(exercise_pb2_grpc.ExerciseServiceServicer):
         return exercise_pb2.ExtractResponse(
             success=ok, exercise_id=request.exercise_id, extracted_poses=poses
         )
+
+
+_complete_callback_pool: CallbackPool | None = None
+_complete_callback_pool_lock = threading.Lock()
+
+
+def get_complete_callback_pool() -> CallbackPool:
+    """프로세스당 하나. 크기는 settings.complete_callback_workers() (#614)."""
+    global _complete_callback_pool
+    if _complete_callback_pool is None:
+        with _complete_callback_pool_lock:
+            if _complete_callback_pool is None:
+                _complete_callback_pool = CallbackPool(settings.complete_callback_workers())
+    return _complete_callback_pool
 
 
 def _send_complete_analysis(state) -> None:
