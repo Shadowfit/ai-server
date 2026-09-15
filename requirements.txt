@@ -1,28 +1,35 @@
-fastapi==0.115.12
-uvicorn[standard]==0.34.3
-pydantic==2.11.3
-pydantic-settings==2.9.1
-orjson==3.10.18
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+pydantic==2.13.5
+pydantic-settings==2.15.0
+orjson==3.12.0
 pybase64==1.5.0
 
+# 🔴 mediapipe 는 0.10.21 이 «solutions API 가 있는 마지막 버전» 이다 — 0.10.30 부터 휠에
+# mediapipe/python/solutions/ 가 아예 없다(0.10.30·0.10.31·0.10.35 휠 목록으로 확인, 2026-09-15).
+# app/core/mediapipe_detector.py 가 mp.solutions.pose 를 쓰므로 올리면 import 에서 죽는다.
+# 올리려면 Tasks API(PoseLandmarker) 이식이 먼저다(#606 계열) — 그 뒤엔 numpy<2 · protobuf<5
+# 핀도 같이 풀린다(0.10.35 는 둘 다 요구하지 않는다). 그래서 아래 셋은 한 묶음이다:
+#   mediapipe 0.10.21 → numpy<2 (mediapipe 요구) → opencv-python-headless 4.x (5.x 는 numpy>=2)
 mediapipe==0.10.21
 opencv-python-headless==4.11.0.86
 numpy<2
 
-dtaidistance==2.3.12
+dtaidistance==2.5.0
 
 python-multipart==0.0.32
 
 grpcio>=1.83.1
 # 생성기 버전 고정 — 커밋된 exercise_pb2*.py 는 이 버전의 protoc 로 만든 것이고, CI 가 재생성해서
 # 같은지 검사한다(ai-server-test.yml). 범위로 두면 러너마다 다른 산출물이 나와 검사가 거짓 실패한다.
-# 1.62.x 인 이유: protobuf==4.25.x 와 호환되는 마지막 계열(1.63+ 는 protobuf 5 를 요구).
+# 1.62.x 인 이유: protobuf==4.25.x 와 호환되는 마지막 계열(1.63+ 는 protobuf 5 를 요구, 1.83 은 7.35+).
+# protobuf 4.25 에 묶인 건 위 mediapipe 0.10.21(protobuf<5) 이라 이것도 mediapipe 묶음이다.
 grpcio-tools==1.62.3
-protobuf==4.25.8
+protobuf==4.25.9
 
 # fastapi.testclient 가 사용. 운영에서도 ai-server 가 외부 호출 시 활용 가능
 httpx==0.28.1
 
 # 관측 스택이 AI 를 긁을 수 있게 (#151). 스냅샷(GET /frame-path)과 달리 이건 **시계열**이다 —
 # 이 이슈가 mysqld_exporter 를 들일 때 쓴 잣대를 AI 에도 같게 적용한 결과다.
-prometheus-client==0.21.1
+prometheus-client==0.26.0
