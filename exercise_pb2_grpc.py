@@ -57,7 +57,11 @@ class ExerciseServiceServicer(object):
     """
 
     def ExtractReferenceData(self, request, context):
-        """[추가] 등록 단계: 유튜브 링크를 주면 전체 좌표를 반환 (Spring -> FastAPI)
+        """등록 단계 (Spring -> FastAPI): 기준 영상 **파일 경로**(youtube_url 필드, 이름만 그렇다 — AI 는 http(s) 를
+        거부한다)를 주면 추출을 **접수**하고 즉시 돌아온다. 좌표는 이 응답이 아니라 AI -> Spring 역호출
+        (같은 이름의 RPC)로 온다 — extracted_poses 는 항상 비어 있다 (2026-09-17, 관리자 mp4 업로드).
+        경로가 양쪽에서 같은 파일을 가리키는 건 proto 밖 계약(docker-compose 공유 볼륨)이다 —
+        docs/architecture/ai-backend-integration.md §3-3.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')

@@ -3,12 +3,13 @@
 Spring → FastAPI 진입점:
 - StartAnalysis: reference 좌표를 받아 세션 상태 초기화
 - StopAnalysis: 누적 결과로 CompleteAnalysis 콜백
-- ExtractReferenceData: YouTube 좌표 추출 (현재는 빈 응답 — 별도 작업으로 분리)
+- ExtractReferenceData: 기준 영상(컨테이너 안 파일 경로) → 좌표 추출을 **접수**하고 백그라운드로 처리
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 
@@ -403,9 +404,10 @@ class ExerciseServicer(exercise_pb2_grpc.ExerciseServiceServicer):
         )
 
     def ExtractReferenceData(self, request, context):
-        """[Spring → FastAPI] 기준 영상 → 기준 좌표(정답지) 추출 (#192).
+        """[Spring → FastAPI] 기준 영상 → 기준 좌표(정답지) 추출 **접수** (#192).
 
         `youtube_url` 필드는 **컨테이너 안에서 읽을 수 있는 영상 파일 경로**로 해석한다.
+        관리자 mp4 업로드(Spring `ReferenceVideoService`)가 공유 볼륨에 쓴 경로가 온다.
 
         🔴 **HTTP(S) URL 은 거부한다.** 유튜브 다운로드는 ToS 상 금지이고, 이 프로젝트는
            그 리스크 수용 여부를 **아직 결정하지 않았다**
@@ -413,9 +415,17 @@ class ExerciseServicer(exercise_pb2_grpc.ExerciseServiceServicer):
            내려받기 시작하면 그 미결정이 조용히 없어진다. 필드 이름은 proto 호환 때문에
            그대로 두되 **의미만 좁힌다.**
 
+        🔴 **응답은 «접수됨» 이지 «추출됨» 이 아니다** (2026-09-17). 예전엔 추출을 끝내고
+           응답했는데, Spring 은 이 호출에 다른 제어 호출과 같은 **5초 데드라인**을 걸어서
+           (`ExerciseAnalysisService.GRPC_CALL_TIMEOUT_SECONDS`) 데모 영상(308프레임)조차
+           DEADLINE_EXCEEDED 로 끝났다. 추출은 어차피 됐지만 Spring 쪽 서킷브레이커가 그걸
+           **실패로 집계**해(윈도 10·최소 5·50%) 업로드 5번이면 그 채널의 라이브 세션까지
+           거부됐다. 그래서 여기서는 즉시 반환할 수 있는 검사(원격 URL·파일 존재)만 하고
+           추출·역호출은 백그라운드 스레드로 넘긴다. `extracted_poses` 는 항상 비어 있다.
+
         저장은 이 응답이 아니라 **Spring 역호출**로 한다 — 같은 이름의 RPC 를 Spring 도
         서버로 구현하고 있고(`ExerciseGrpcService.extractReferenceData`), 그쪽이
-        `saveReferencePoses` 로 DB 에 넣는다. 비어 있던 것은 이쪽 절반뿐이었다.
+        `saveReferencePoses` 로 DB 에 넣는다.
         """
         url = request.youtube_url or ""
         logger.info(
@@ -432,18 +442,56 @@ class ExerciseServicer(exercise_pb2_grpc.ExerciseServiceServicer):
                 success=False, exercise_id=request.exercise_id, extracted_poses=[]
             )
 
-        try:
-            poses = _extract_reference_poses_from_video(url)
-        except Exception as e:  # noqa: BLE001 — 사유를 그대로 로그에 남긴다
-            logger.error("[#192] 기준 좌표 추출 실패 (%s): %s", url, e)
+        # 파일이 없으면 지금 거절한다 — 백그라운드에서 알아채면 Spring 은 «접수됨» 만 받고
+        # 좌표는 영영 안 바뀐다. 공유 볼륨 마운트가 빠졌을 때 드러나는 자리가 여기다.
+        if not os.path.isfile(url):
+            logger.error(
+                "[#192] 기준 영상 파일이 없다 — 공유 볼륨 마운트·REFERENCE_VIDEO_AI_DIR 를 확인할 것 (%s)",
+                url,
+            )
             return exercise_pb2.ExtractResponse(
                 success=False, exercise_id=request.exercise_id, extracted_poses=[]
             )
 
-        ok = spring_client.send_reference_poses(request.exercise_id, poses)
-        return exercise_pb2.ExtractResponse(
-            success=ok, exercise_id=request.exercise_id, extracted_poses=poses
+        get_reference_extraction_pool().submit(
+            correlation_wrap(_extract_and_send_reference), request.exercise_id, url
         )
+        return exercise_pb2.ExtractResponse(
+            success=True, exercise_id=request.exercise_id, extracted_poses=[]
+        )
+
+
+_reference_extraction_pool: CallbackPool | None = None
+_reference_extraction_pool_lock = threading.Lock()
+
+
+def get_reference_extraction_pool() -> CallbackPool:
+    """프로세스당 스레드 **하나**.
+
+    추출은 CPU 작업이라 같은 프로세스에서 둘을 동시에 돌려도 GIL 이 직렬화한다
+    (`docs/decisions/per-process-ceiling-cause.md`) — 스레드를 늘려도 빨라지지 않고 라이브
+    세션의 프레임 처리만 더 밀린다. 하나로 두면 관리자가 연달아 올려도 FIFO 로 한 건씩 간다.
+    """
+    global _reference_extraction_pool
+    if _reference_extraction_pool is None:
+        with _reference_extraction_pool_lock:
+            if _reference_extraction_pool is None:
+                _reference_extraction_pool = CallbackPool(1, name="reference-extraction")
+    return _reference_extraction_pool
+
+
+def _extract_and_send_reference(exercise_id: int, path: str) -> None:
+    """백그라운드: 추출 → Spring 역호출. 실패는 로그로만 남는다 — 이 시점엔 돌려줄 응답이 없다."""
+    try:
+        poses = _extract_reference_poses_from_video(path)
+    except Exception as e:  # noqa: BLE001 — 사유를 그대로 로그에 남긴다
+        logger.error("[#192] 기준 좌표 추출 실패 (exercise=%s, %s): %s", exercise_id, path, e)
+        return
+    ok = spring_client.send_reference_poses(exercise_id, poses)
+    logger.info(
+        "[#192] 기준 좌표 역호출 %s (exercise=%s, %d프레임)",
+        "완료" if ok else "실패", exercise_id, len(poses),
+    )
 
 
 _complete_callback_pool: CallbackPool | None = None

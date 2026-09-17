@@ -2,8 +2,9 @@
 
 🔴 저장소 안에 **호출자가 없다** (#293, 2026-08-22 확인).
 
-**정본은 gRPC `ExtractReferenceData` 다**(`exercise_servicer.py`). 관리자가 유튜브 링크를
-넣으면 Spring 이 AI 에 시키고 AI 가 `exercise_references` 로 되돌려준다(#192·#220).
+**정본은 gRPC `ExtractReferenceData` 다**(`exercise_servicer.py`). 관리자가 mp4 를 올리면
+(`POST /admin/exercises/{id}/reference-video`) Spring 이 공유 볼륨 경로로 AI 에 시키고 AI 가
+`exercise_references` 로 되돌려준다(#192·#220, 2026-09-17).
 이 HTTP 는 **파일 업로드판이고 결과를 아무 데도 저장하지 않는다** — JSON 으로 뱉고 끝이라
 정답지가 될 수 없다. mp4 를 직접 올려 눈으로 확인하는 디버깅 수단으로는 쓸 수 있다.
 
