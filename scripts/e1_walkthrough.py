@@ -72,7 +72,12 @@ def main() -> int:
     p.add_argument("--ai", default="http://localhost:8000")
     p.add_argument("--ai-token", required=True, help="AI_PUBLIC_TOKEN")
     p.add_argument("--exercise-id", type=int, default=1)
-    p.add_argument("--fps", type=float, default=3.0, help="전송 프레임률 (앱과 같은 3fps)")
+    p.add_argument(
+        "--fps",
+        type=float,
+        default=3.0,
+        help="전송 프레임률 (앱과 같은 3fps). 영상에서 고르는 간격이자 **실제로 보내는 벽시계 간격**이다 (#714)",
+    )
     args = p.parse_args()
 
     # 매 판 새 계정을 쓴다 — 같은 계정을 재사용하면 «이미 진행 중인 세션»(W005)에 걸려
@@ -150,12 +155,21 @@ def main() -> int:
 
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     step = max(1, int(round(src_fps / args.fps)))
-    log("영상", f"{args.video} ({src_fps:.1f}fps → {step}프레임마다 전송)")
+    log("영상", f"{args.video} ({src_fps:.1f}fps → {step}프레임마다, {1000 / args.fps:.0f}ms 간격으로 전송)")
 
     sent = detected = judged = 0
     max_rep = 0
     idx = 0
     skipped_msgs: dict[str, int] = {}
+    # 🔴 페이싱 (#714). `--fps` 는 영상에서 «몇 프레임마다 고르나» 만 정했고 보내는 속도는 영상을
+    #    읽는 속도 그대로였다 — 그러면 AI 의 유입 상한(`session_state.MIN_FRAME_INTERVAL_SEC`,
+    #    0.300s)에 걸려 프레임이 `RATE_LIMITED` 로 판정에서 빠진다(실측 11 전송 → 7 판정, rep 0).
+    #    HTTP 는 200 이라 겉으론 정상이고, rep 0 의 원인이 「영상이 못 쓴다」 로 오귀속된다.
+    #    앱은 3fps(`exercise.tsx` intervalMs=330)로 보내므로 같은 fps 를 벽시계 간격으로도 쓴다 —
+    #    새 상수를 만들지 않는다. 간격은 «직전 응답을 받은 시각» 기준이라 요청 지연이 얹혀도 상한
+    #    아래로 내려가지 않는다(상한은 서버 도착 간격으로 재기 때문).
+    send_interval = 1.0 / args.fps
+    next_send_at = 0.0
     while True:
         ok, frame = cap.read()
         if not ok:
@@ -174,6 +188,9 @@ def main() -> int:
             "session_id": session_id,
             "session_nonce": session_nonce,
         }
+        wait = next_send_at - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
         # 첫 프레임은 AI 배정이 끝날 때까지 재시도한다(위 ②-1 참고).
         attempts = 12 if sent == 0 else 1
         for attempt in range(attempts):
@@ -190,6 +207,7 @@ def main() -> int:
             if attempt == 0:
                 log("AI 배정 대기", str(body.get("message"))[:90])
             time.sleep(1.0)
+        next_send_at = time.monotonic() + send_interval
         sent += 1
 
         # landmarks 는 **스킵된 프레임에도 들어 있다.** 그게 #196 이 속은 지점이라 스킵보다
@@ -215,6 +233,10 @@ def main() -> int:
     log("프레임 유입", f"전송 {sent} · 랜드마크 {detected} · 판정에 들어감 {judged} · rep {max_rep}회")
     for reason, n in skipped_msgs.items():
         log("  스킵", f"{n}회 — {reason}")
+    # 페이싱을 넣은 뒤에도 이게 0 이 아니면 «영상» 이 아니라 «드라이버» 가 원인이다 — 판정
+    # 프레임을 잘라먹은 채 rep 을 읽으면 #714 의 오귀속이 그대로 되풀이된다.
+    if skipped_msgs.get(PoseSkipReason.RATE_LIMITED.value):
+        log("  ⚠️ RATE_LIMITED", f"--fps {args.fps:g} 의 간격이 AI 유입 상한보다 짧다 — fps 를 낮춰서 다시")
 
     # ── ④ 세션 종료 ─────────────────────────────────────────────────────────
     r = http.patch(f"{args.spring}/sessions/{session_id}/end", headers=auth)
