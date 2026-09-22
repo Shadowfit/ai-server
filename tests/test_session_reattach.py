@@ -30,7 +30,6 @@ def _registry_with_live_session(session_id: int = 1):
     state.rep_state = "bottom"
     state.frame_index = 300
     state.previous_smoothed_knee = 95.5
-    state.recent_raw_knees = [95.0, 96.0, 95.5]
     state.current_rep_frames.append(
         PerRepFrame(timestamp_sec=10.0, joint_coordinates="[]", angles=[95.0])
     )
@@ -55,7 +54,7 @@ def test_상태가_없으면_주입된_rep_카운트로_생성된다():
     # 분석기 내부 상태는 복원되지 않는다(§4-0). 초기값이어야 한다.
     assert state.rep_state == "waiting_for_standing"
     assert state.frame_index == 0
-    assert state.recent_raw_knees == []
+    assert state.squat_counter is None
 
 
 def test_상태가_살아있으면_아무것도_덮어쓰지_않는다():

@@ -305,7 +305,10 @@ def _detect_pose(req: PoseRequest):
                 rep_count=state.rep_count,
             )
 
-        angles, smoothed_knee_angle, rep_event = analyzer.process_frame(state, landmarks)
+        angles, smoothed_knee_angle, rep_event = analyzer.process_frame(
+            state, landmarks, timestamp_sec=received_at,
+            image_aspect_ratio=image_rgb.shape[1] / image_rgb.shape[0],
+        )
 
         if angles is None:
             # visibility 부족 — 프레임 스킵. 🔴 success=False 다 (이슈 #267).

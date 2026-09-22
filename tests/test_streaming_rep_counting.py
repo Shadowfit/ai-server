@@ -34,11 +34,11 @@ def _count_reps(knee_sequence: list[float]) -> int:
     analyzer = StreamingSquatAnalyzer("squat")
     reps = 0
 
-    for knee_angle in knee_sequence:
+    for i, knee_angle in enumerate(knee_sequence):
         # process_frame 은 (angles, smoothed_knee_angle, rep_event) 3-튜플이다. 가운데
         # 깊이 지표는 이 테스트가 검증하는 대상이 아니라(test_streaming_depth_metric.py 담당)
         # 버린다 — rep 집계는 이 값에 의존하지 않는다.
-        angles, _, rep_event = analyzer.process_frame(state, _frame(knee_angle))
+        angles, _, rep_event = analyzer.process_frame(state, _frame(knee_angle), timestamp_sec=i / 3)
         if angles is not None:
             state.current_rep_frames.append(
                 PerRepFrame(timestamp_sec=0.0, joint_coordinates="{}", angles=angles)
@@ -108,8 +108,8 @@ class StreamingRepCountingTests(unittest.TestCase):
         sequence = [170.0] * idle_frames + _ramp(170, 85, 5) + [85.0] + _ramp(85, 170, 5) + _STANDING_TAIL
         batch_sizes = []
 
-        for knee_angle in sequence:
-            angles, _, rep_event = analyzer.process_frame(state, _frame(knee_angle))
+        for i, knee_angle in enumerate(sequence):
+            angles, _, rep_event = analyzer.process_frame(state, _frame(knee_angle), timestamp_sec=i / 3)
             if angles is not None:
                 state.current_rep_frames.append(
                     PerRepFrame(timestamp_sec=0.0, joint_coordinates="{}", angles=angles)
@@ -137,6 +137,34 @@ class StreamingRepCountingTests(unittest.TestCase):
         rest = [170.0] * 6 + _ramp(170, 92, 15) + [92.0] * 90 + _ramp(92, 170, 15) + [170.0] * 6
         squat = _ramp(170, 85, 5) + [85.0] + _ramp(85, 170, 5) + _STANDING_TAIL
         self.assertEqual(_count_reps(rest + squat), 1)
+
+
+# ── 스쿼트 깊이 모드 선택 (2026-09-21) ──────────────────────────────────────
+# StreamingSquatAnalyzer는 세션마다 새로 만들어지지 않는 stateless 싱글턴이므로(
+# app/core/analyzer_registry.py), 임계값 선택은 세션별 state.depth_mode를 통해서만
+# 이뤄져야 한다 — 이 테스트가 그 배선을 고정한다.
+def test_process_frame_picks_thresholds_from_state_depth_mode():
+    from app.core.squat_counter import DEPTH_MODE_THRESHOLDS
+
+    analyzer = StreamingSquatAnalyzer("squat")
+
+    half_state = SessionState(session_id=1, exercise_id=1, depth_mode="HALF")
+    analyzer.process_frame(half_state, _frame(175), timestamp_sec=0.0)
+    assert half_state.squat_counter.thresholds is DEPTH_MODE_THRESHOLDS["HALF"]
+
+    full_state = SessionState(session_id=2, exercise_id=1, depth_mode="FULL")
+    analyzer.process_frame(full_state, _frame(175), timestamp_sec=0.0)
+    assert full_state.squat_counter.thresholds is DEPTH_MODE_THRESHOLDS["FULL"]
+
+    # 기본값(필드를 아예 안 준 옛 상태)과 인식 못 하는 문자열은 분석기 자신의 기본값으로
+    # 폴백한다 — 둘 다 FULL과 같은 임계값이다.
+    default_state = SessionState(session_id=3, exercise_id=1)
+    analyzer.process_frame(default_state, _frame(175), timestamp_sec=0.0)
+    assert default_state.squat_counter.thresholds == DEPTH_MODE_THRESHOLDS["FULL"]
+
+    unknown_state = SessionState(session_id=4, exercise_id=1, depth_mode="BOGUS")
+    analyzer.process_frame(unknown_state, _frame(175), timestamp_sec=0.0)
+    assert unknown_state.squat_counter.thresholds == DEPTH_MODE_THRESHOLDS["FULL"]
 
 
 if __name__ == "__main__":

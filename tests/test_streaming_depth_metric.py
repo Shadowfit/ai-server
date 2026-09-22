@@ -96,8 +96,8 @@ class StreamingDepthMetricTests(unittest.TestCase):
         descent = [175, 160, 130, 110, 90, 85]
 
         measured = []
-        for knee_angle in descent:
-            _, smoothed, _ = analyzer.process_frame(state, _frame(knee_angle))
+        for i, knee_angle in enumerate(descent):
+            _, smoothed, _ = analyzer.process_frame(state, _frame(knee_angle), timestamp_sec=i / 3)
             measured.append(smoothed)
 
         self.assertEqual(len(set(measured)), len(measured), "프레임마다 값이 달라야 한다")
@@ -114,9 +114,9 @@ class StreamingDepthMetricTests(unittest.TestCase):
         analyzer = StreamingSquatAnalyzer()
         state = _state()
 
-        for knee_angle in (170, 170):
-            analyzer.process_frame(state, _frame(knee_angle))
-        _, smoothed, _ = analyzer.process_frame(state, _frame(80))  # 한 프레임만 급락
+        for i, knee_angle in enumerate((170, 170)):
+            analyzer.process_frame(state, _frame(knee_angle), timestamp_sec=i / 30)
+        _, smoothed, _ = analyzer.process_frame(state, _frame(80), timestamp_sec=2 / 30)
 
         # 원시값이면 ~80 이 나와야 하지만 최근 3프레임 평균이라 훨씬 완만하다
         self.assertGreater(smoothed, 100.0)

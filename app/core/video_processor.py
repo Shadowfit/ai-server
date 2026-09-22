@@ -39,6 +39,7 @@ def analyze_video(video_path: str, exercise_type: str) -> VideoAnalysisResult:
     frames: list[FrameResult] = []
     landmark_frames: list[list[Landmark] | None] = []
     frame_idx = 0
+    image_aspect_ratio = 1.0
 
     while True:
         ret, frame = cap.read()
@@ -46,6 +47,7 @@ def analyze_video(video_path: str, exercise_type: str) -> VideoAnalysisResult:
             break
 
         if frame_idx % frame_interval == 0:
+            image_aspect_ratio = frame.shape[1] / frame.shape[0]
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             landmarks = pose_tracker.filter(detector.detect(rgb))
             landmark_frames.append(landmarks)
@@ -67,10 +69,10 @@ def analyze_video(video_path: str, exercise_type: str) -> VideoAnalysisResult:
 
     squat_summary = None
     if exercise_type == "squat":
-        min_rep_frames = max(4, int(processed_fps * 1.2))
         squat_frame_metrics, squat_summary = analyze_squat_frames(
             landmark_frames,
-            min_rep_frames=min_rep_frames,
+            fps=processed_fps,
+            image_aspect_ratio=image_aspect_ratio,
         )
         valid_metric_index = 0
         for frame in frames:

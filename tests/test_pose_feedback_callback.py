@@ -33,19 +33,31 @@ class BackBentFeedbackCallbackTest(unittest.TestCase):
         return state
 
     def _run_rep(self, session_id: int, torso_tilt: float):
-        frames = iter(_frame(angle, torso_tilt=torso_tilt) for angle in _REP_SEQUENCE)
+        # torso_tilt 는 bottom 프레임에서만 준다 — squat_counter.SquatCounter 는 standing 판정에
+        # hip_angle 도 보므로, 서 있는 프레임까지 기울이면 standing 에 도달하지 못해 rep 자체가
+        # 완성되지 않는다(이 테스트의 관심사는 등 굽음 감지이지 자세 판정이 아니다).
+        frames = iter(_frame(angle, torso_tilt=torso_tilt if angle == _BOTTOM else 5.0)
+                      for angle in _REP_SEQUENCE)
+        # SquatCounter 는 시각 기반 FSM 이라 process_frame 호출 사이의 실제 경과 시간이
+        # standing_confirm_sec/min_active_sec 판정에 들어간다. 테스트 루프의 실제 벽시계 간격은
+        # 마이크로초 단위라 그 문턱을 못 넘기므로, 3fps 를 흉내 낸 가짜 시계로 고정한다.
+        clock = {"now": 0.0}
         req = PoseRequest(image="", session_id=session_id, exercise_type="squat")
         with mock.patch.object(pose_endpoint, "base64_to_image", lambda _: _BLANK_IMAGE), \
             mock.patch.object(
                 pose_endpoint, "lease_detector", _fake_lease(lambda _img: next(frames))
             ), \
             mock.patch.object(pose_endpoint, "accept_frame", lambda _s, _n: True), \
+            mock.patch.object(pose_endpoint.time, "monotonic", lambda: clock["now"]), \
             mock.patch.object(pose_endpoint.spring_client, "report_pose_data_batch"), \
             mock.patch.object(pose_endpoint.spring_client, "report_feedback_batch") as mock_fb:
             # flush_pending_feedback 이 outcome 을 언패킹한다 — 기본 반환을 성공으로 둬서
             # 버퍼가 정상적으로 비워지는 경로를 태운다(그래야 무한루프 없이 한 번에 끝난다).
             mock_fb.return_value = (spring_client.FeedbackBatchOutcome.OK, 1)
-            responses = [pose_endpoint.detect_pose(req) for _ in _REP_SEQUENCE]
+            responses = []
+            for i in range(len(_REP_SEQUENCE)):
+                clock["now"] = i / 3
+                responses.append(pose_endpoint.detect_pose(req))
         return responses, mock_fb
 
     def test_기울기가_35도를_넘고_게이트도_실패하면_BACK_BENT_를_보낸다(self) -> None:

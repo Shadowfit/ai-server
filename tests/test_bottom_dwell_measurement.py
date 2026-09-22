@@ -66,7 +66,7 @@ def _count_reps(descent: float, hold: float, ascent: float | None = None) -> int
     for k in range(int(total * _FPS) + 1):
         now = k / _FPS
         angles, _, rep_event = analyzer.process_frame(
-            state, _frame(_knee_angle_at(now, descent, hold, ascent))
+            state, _frame(_knee_angle_at(now, descent, hold, ascent)), timestamp_sec=now
         )
         if angles is not None:
             state.current_rep_frames.append(
@@ -139,9 +139,11 @@ class DwellIsWhatIsMeasuredTests(unittest.TestCase):
         total = _LEAD_SEC + descent + hold + descent + _TAIL_SEC
         for k in range(int(total * _FPS) + 1):
             analyzer.process_frame(
-                state, _frame(_knee_angle_at(k / _FPS, descent, hold, descent))
+                state, _frame(_knee_angle_at(k / _FPS, descent, hold, descent)), timestamp_sec=k / _FPS
             )
-            peak = max(peak, state.bottom_frame_count)
+            counter = state.squat_counter
+            if counter.stage == "bottom" and counter.bottom_since is not None:
+                peak = max(peak, round((k / _FPS - counter.bottom_since) * _FPS) + 1)
         return peak
 
     def test_dwell_count_barely_moves_with_pace(self) -> None:

@@ -67,29 +67,19 @@ def _average_sequences(sequences: list[list[list[float]]]) -> list[list[float]]:
 def _segment_reps(frames: list[FrameResult]) -> list[RepSegment]:
     rep_segments: list[RepSegment] = []
     current_frames: list[FrameResult] = []
-    active = False
-    seen_bottom = False
-    rep_index = 0
+    previous_count = 0
 
     for frame in frames:
         metrics = frame.squat_metrics
         if metrics is None:
+            current_frames = []
             continue
-
-        knee_angle = metrics.knee_angle
-        if not active and knee_angle < 160:
-            active = True
+        if metrics.cycle_stage == "descending" and not current_frames:
             current_frames = [frame]
-            seen_bottom = knee_angle <= 100
-            continue
-
-        if active:
+        elif current_frames:
             current_frames.append(frame)
-            if knee_angle <= 100:
-                seen_bottom = True
-
-            if seen_bottom and knee_angle >= 155:
-                rep_index += 1
+        if metrics.rep_count > previous_count:
+            if current_frames:
                 angles = [item.angles for item in current_frames]
                 knee_angles = [item.squat_metrics.knee_angle for item in current_frames if item.squat_metrics]
                 torso_tilts = [item.squat_metrics.torso_tilt for item in current_frames if item.squat_metrics]
@@ -102,7 +92,7 @@ def _segment_reps(frames: list[FrameResult]) -> list[RepSegment]:
 
                 rep_segments.append(
                     RepSegment(
-                        rep_index=rep_index,
+                        rep_index=metrics.rep_count,
                         start_frame_index=current_frames[0].frame_index,
                         end_frame_index=current_frames[-1].frame_index,
                         angles=angles,
@@ -114,9 +104,10 @@ def _segment_reps(frames: list[FrameResult]) -> list[RepSegment]:
                         score=score,
                     )
                 )
-                active = False
-                seen_bottom = False
-                current_frames = []
+            previous_count = metrics.rep_count
+            current_frames = []
+        elif metrics.cycle_stage in ("waiting_for_standing", "ready"):
+            current_frames = []
 
     return rep_segments
 

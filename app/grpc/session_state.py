@@ -14,6 +14,7 @@ from collections import deque
 from dataclasses import dataclass, field
 
 from app.grpc import spring_client
+from app.core.squat_counter import SquatCounter
 from app.models.pose import Landmark
 
 logger = logging.getLogger(__name__)
@@ -101,6 +102,10 @@ class SessionState:
     exercise_id: int
     exercise_type: str = "squat"
     persona: str = "BEGINNER"
+    # 스쿼트 깊이 모드 "FULL"/"HALF" (2026-09-21). persona와 동일한 규약 — 세션 생성 시
+    # 정해지고, 재부착에서는 덮어쓰지 않는다(create_if_absent의 "이미 살아있음" 분기가
+    # 이 필드를 건드리지 않으므로 자동으로 보존된다). 스쿼트가 아니면 무의미하되 해롭지 않다.
+    depth_mode: str = "FULL"
     # 세션 소유권 검증용 비밀값 (이슈 #187 안 (d)).
     #
     # Spring 이 세션 생성 시 만들어 ① REST 응답으로 클라에, ② StartAnalysis/ReattachAnalysis 로
@@ -131,19 +136,10 @@ class SessionState:
 
     # 분석기 내부 상태 (StreamingSquatAnalyzer가 관리)
     rep_count: int = 0
+    squat_counter: SquatCounter | None = None
     rep_state: str = "waiting_for_standing"
-    last_rep_frame_index: int = -10_000
-    # bottom 구간에서 **실제로 100° 아래에 있던** 프레임 수. 앉아서 쉬는 것과 스쿼트를 가르는
-    # 축이다 (이슈 #93).
-    #
-    # 진입 프레임 인덱스가 아니라 카운터인 이유(이슈 #159): 진입~이탈 프레임 차이로 재면 이탈
-    # 임계가 150° 라서 **상승 중 100~150° 구간이 통째로 「바닥 체류」에 포함된다.** 그러면 하강이
-    # 느린 사용자일수록 체류 예산이 줄어, 속도를 안 보려고 만든 상수가 속도에 의존하게 된다.
-    # 측정: 3fps·체류 0.5초 고정에서 하강 5.1초부터 정상 rep 이 사라졌다.
-    bottom_frame_count: int = 0
     frame_index: int = 0
     previous_smoothed_knee: float | None = None
-    recent_raw_knees: list[float] = field(default_factory=list)
 
     # 완료된 rep 요약 (StopAnalysis 시 평균 계산용)
     completed_reps: list[CompletedRep] = field(default_factory=list)
@@ -334,6 +330,7 @@ class SessionStateRegistry:
         persona: str = "BEGINNER",
         initial_rep_count: int = 0,
         session_nonce: str | None = None,
+        depth_mode: str = "FULL",
     ) -> SessionState:
         with self._lock:
             state = SessionState(
@@ -344,6 +341,7 @@ class SessionStateRegistry:
                 reference_angles=reference_angles,
                 rep_count=initial_rep_count,
                 session_nonce=session_nonce,
+                depth_mode=depth_mode,
             )
             self._sessions[session_id] = state
             return state
@@ -357,6 +355,7 @@ class SessionStateRegistry:
         persona: str = "BEGINNER",
         initial_rep_count: int = 0,
         session_nonce: str | None = None,
+        depth_mode: str = "FULL",
     ) -> tuple[SessionState, bool]:
         """재부착 전용. 상태가 이미 있으면 **보존하고** 그대로 돌려준다.
 
@@ -396,6 +395,7 @@ class SessionStateRegistry:
                 reference_angles=reference_angles,
                 rep_count=initial_rep_count,
                 session_nonce=session_nonce,
+                depth_mode=depth_mode,
             )
             self._sessions[session_id] = state
             return state, False

@@ -45,6 +45,7 @@ class SquatAnalyzerTests(unittest.TestCase):
     def test_analyze_squat_frames_counts_rep(self) -> None:
         frames = [
             _frame(175),
+            _frame(175),
             _frame(160),
             _frame(120),
             _frame(90),
@@ -53,12 +54,13 @@ class SquatAnalyzerTests(unittest.TestCase):
             _frame(120),
             _frame(160),
             _frame(175),
+            _frame(175),
         ]
 
         per_frame, summary = analyze_squat_frames(frames)
 
         self.assertGreaterEqual(summary.reps_detected, 1)
-        self.assertGreater(summary.quality_score, 0)
+        self.assertIsNone(summary.quality_score)
         self.assertIsNotNone(per_frame[-1])
 
     def test_analyze_squat_frames_flags_low_visibility(self) -> None:
@@ -69,12 +71,8 @@ class SquatAnalyzerTests(unittest.TestCase):
         _, summary = analyze_squat_frames([frame, frame, frame])
 
         self.assertEqual(summary.reps_detected, 0)
-        self.assertTrue(
-            any(
-                "frame" in message.lower() or "lighting" in message.lower()
-                for message in summary.feedback
-            )
-        )
+        self.assertEqual(summary.valid_frame_ratio, 0)
+        self.assertTrue(summary.feedback)
 
 
 if __name__ == "__main__":

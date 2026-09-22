@@ -13,6 +13,7 @@ class SquatFrameMetrics(BaseModel):
     torso_tilt: float = Field(description="Torso tilt from vertical in degrees")
     hip_height: float = Field(description="Normalized hip height (0-1)")
     phase: str = Field(description="Estimated squat phase")
+    cycle_stage: str = Field(default="waiting_for_standing", description="Squat repetition state")
     rep_count: int = Field(description="Completed squat repetitions so far")
 
 
@@ -33,7 +34,9 @@ class SquatAnalysisResult(BaseModel):
     current_phase: str = Field(description="Current or final phase at the end of analysis")
     deepest_knee_angle: float = Field(description="Lowest average knee angle reached")
     mean_torso_tilt: float = Field(description="Average torso tilt from vertical")
-    quality_score: int = Field(description="Heuristic squat quality score from 0 to 100")
+    quality_score: int | None = Field(
+        default=None, description="No validated scalar squat-quality score is available"
+    )
     feedback: list[str] = Field(description="Human-readable coaching feedback")
     valid_frame_ratio: float = Field(description="Ratio of frames with reliable pose landmarks")
 

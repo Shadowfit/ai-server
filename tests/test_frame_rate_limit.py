@@ -88,7 +88,7 @@ def _count_reps(fps: float, hold_sec: float, *, limiter: bool) -> int:
             continue
 
         angles, _, rep_event = analyzer.process_frame(
-            state, _frame(_knee_angle_at(now, hold_sec))
+            state, _frame(_knee_angle_at(now, hold_sec)), timestamp_sec=now
         )
         if angles is not None:
             state.current_rep_frames.append(
@@ -108,39 +108,12 @@ class FrameRateLimitReproductionTests(unittest.TestCase):
     FPS_CASES = (3.0, 10.0, 30.0)
     HOLD_CASES = (0.5, 1.0, 1.5, 2.0, 3.0)
 
-    def test_without_limiter_reproduces_the_defect(self) -> None:
-        """상한이 없으면 높은 fps 에서 rep 이 사라진다 — 이 테스트가 헛돌지 않는다는 증거.
-
-        ⚠️ **기준선이 한 번 바뀌었다.** 처음 이 검사를 넣었을 때는 10·30fps × 체류 5종 = 10 조합이
-        전부 사라졌다. #159(체류를 «밴드 통과 + 체류» 가 아니라 실제 100° 아래 프레임으로 계량)를
-        고친 뒤로는 **8 조합**이다 — 10fps · 체류 0.5s·1.0s 는 상한이 없어도 살아남는다.
-
-        두 결함이 같은 예산을 놓고 겹쳐 있었기 때문이다. #159 가 예산에서 밴드 통과 시간을 빼면서
-        fps 상승에 대한 여유도 같이 늘었다. **#143 이 사라진 것은 아니다** — 30fps 는 여전히 전부
-        사라지고, 그것이 상한이 필요한 이유다.
-
-        그래서 «10 조합 전부» 를 고정하지 않는다. 30fps 행만 전부 사라지는 것으로 고정하고,
-        10fps 행은 #159 같은 인접 수정이 들어올 때마다 깨지지 않게 하한만 둔다.
-        """
-        vanished_30 = [
-            hold for hold in self.HOLD_CASES if _count_reps(30.0, hold, limiter=False) == 0
-        ]
-        self.assertEqual(
-            len(vanished_30),
-            len(self.HOLD_CASES),
-            f"30fps 에서 #143 재현이 안 됐다 — 상한 없이 살아남은 체류: "
-            f"{set(self.HOLD_CASES) - set(vanished_30)}",
-        )
-
-        vanished_10 = [
-            hold for hold in self.HOLD_CASES if _count_reps(10.0, hold, limiter=False) == 0
-        ]
-        self.assertGreaterEqual(
-            len(vanished_10),
-            1,
-            "10fps 에서도 상한 없이 사라지는 조합이 하나는 있어야 한다 "
-            f"(현재 사라지는 체류: {vanished_10})",
-        )
+    def test_without_limiter_counts_at_every_fps(self) -> None:
+        """초 단위 상태 판정은 프레임 수와 무관하게 같은 동작을 센다."""
+        for fps in self.FPS_CASES:
+            for hold in self.HOLD_CASES:
+                with self.subTest(fps=fps, hold_sec=hold):
+                    self.assertEqual(_count_reps(fps, hold, limiter=False), 1)
 
     def test_limiter_restores_reps_at_every_fps(self) -> None:
         """상한이 있으면 fps 가 얼마든 정상 스쿼트 1회는 1회로 집계된다."""
@@ -274,7 +247,7 @@ class HoldBoundaryTests(unittest.TestCase):
 
     def _boundary(self, fps: float) -> float:
         """rep 이 사라지기 시작하는 바닥 체류 시간 (0.1초 해상도)."""
-        hold = 0.1
+        hold = 0.5
         while hold < 10.0:
             if _count_reps(fps, round(hold, 1), limiter=True) == 0:
                 return round(hold, 1)
@@ -282,19 +255,14 @@ class HoldBoundaryTests(unittest.TestCase):
         return 10.0
 
     def test_hold_boundary_is_no_longer_fps_dependent(self) -> None:
-        """변경 전 3fps 4.3s / 10fps 0.5s / 30fps 0.2s → 변경 후 셋이 한 자리로 모인다.
-
-        완전히 같아지지는 않는다. 상한은 3.33fps 이고 native 클라는 3.03fps 라, 깎인 스트림이
-        약간 더 촘촘하고 예산(4.5s)도 native(5.0s)보다 짧다. 그 잔차를 «같다» 로 적지 않고
-        범위로 고정한다.
-        """
+        """앉아서 쉬는 경우를 거르는 8초 상한이 fps에 크게 흔들리지 않는다."""
         boundaries = {fps: self._boundary(fps) for fps in (3.0, 10.0, 30.0)}
 
         for fps, boundary in boundaries.items():
             with self.subTest(fps=fps):
                 self.assertGreaterEqual(
                     boundary,
-                    3.0,
+                    7.0,
                     f"{fps}fps 의 체류 임계가 {boundary}s — 실제 체류 ~1초 대비 여유가 없다 "
                     f"(전체: {boundaries})",
                 )
