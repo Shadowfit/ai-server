@@ -73,6 +73,10 @@ def main() -> int:
     p.add_argument("--ai-token", required=True, help="AI_PUBLIC_TOKEN")
     p.add_argument("--exercise-id", type=int, default=1)
     p.add_argument(
+        "--target-reps-per-set", type=int, default=None,
+        help="세트당 목표 횟수(V26). 생략하면 Spring 이 추천 공식으로 채운다 — 리포트의 sets[] 로 경계를 확인한다",
+    )
+    p.add_argument(
         "--fps",
         type=float,
         default=3.0,
@@ -121,8 +125,10 @@ def main() -> int:
     log("온보딩", "200")
 
     # ── ② 세션 시작 (여기서 Spring → AI gRPC StartAnalysis 가 일어난다) ──────
-    r = http.post(f"{args.spring}/exercises/sessions",
-                  json={"exerciseId": args.exercise_id}, headers=auth)
+    session_req = {"exerciseId": args.exercise_id}
+    if args.target_reps_per_set is not None:
+        session_req["targetRepsPerSet"] = args.target_reps_per_set
+    r = http.post(f"{args.spring}/exercises/sessions", json=session_req, headers=auth)
     if r.status_code not in (200, 202):
         log("세션 시작 실패", f"{r.status_code} {r.text[:200]}")
         return 1
@@ -137,7 +143,8 @@ def main() -> int:
     # "소유권 대조 실패"로 프레임을 버리는데, 그 응답이 일부러 SESSION_NOT_FOUND 와
     # 똑같은 모양이라(session 열거 방지) 겉으로는 "배정이 안 끝났다"와 구분이 안 된다.
     session_nonce = session_body.get("sessionNonce")
-    log("세션 시작", f"{r.status_code} sessionId={session_id} aiWorker={ai_worker}")
+    log("세션 시작", f"{r.status_code} sessionId={session_id} aiWorker={ai_worker} "
+                  f"targetRepsPerSet={session_body.get('targetRepsPerSet')} targetSets={session_body.get('targetSets')}")
 
     # ── ②-1 AI 세션 배정 대기 ───────────────────────────────────────────────
     # 세션 시작은 202 다 — Spring 이 받았다는 뜻이지 AI 가 배정을 끝냈다는 뜻이 아니다.
@@ -261,6 +268,12 @@ def main() -> int:
         print(f"        {key:<18} {report.get(key)}")
     print(f"        worstSection       {report.get('worstSection')}")
     print(f"        repTrend           {len(report.get('repTrend') or [])}건")
+    # 세트(V26) — Spring 이 pose_data 의 rep 집계를 ceil(rep/T) 로 묶은 것. 세트 도입 전 세션은 [].
+    details = report.get("syncRateDetails") or []
+    print(f"        setInfo            {details[0].get('setInfo') if details else None}")
+    for st in report.get("sets") or []:
+        print(f"        set {st.get('setNo')}              reps={st.get('reps')} avgSync={st.get('avgSyncRate')} "
+              f"t={st.get('startedSec')}~{st.get('endedSec')}s")
 
     # ── 판정 ────────────────────────────────────────────────────────────────
     # 200 을 세지 않는다. #196 은 «전 구간 200 인데 전부 0» 이었다.
